@@ -1,0 +1,65 @@
+[project]
+name = "xsample"
+version = "0.1.0"
+description = "X-Sample local-first AI music sample editor — engine"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115,<0.163",
+    "uvicorn>=0.32,<0.55",
+    "pydantic>=2.9,<2.15",
+    "numpy>=2.2,<2.5",
+    "onnx>=1.19,<1.24",
+    "onnxruntime-directml>=1.22,<1.25",
+    "psutil>=6.1,<8",
+    "soundfile>=0.13,<0.15",
+    "pyaudiowpatch>=0.2.12,<0.3",
+]
+
+[project.scripts]
+xsample = "xsample.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<10",
+    "pytest-timeout>=2.3,<3",
+    "httpx>=0.28,<0.29",
+    "ruff>=0.14,<0.18",
+    "mypy>=1.17,<3",
+]
+
+[build-system]
+requires = ["hatchling>=1.25,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xsample"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
+ignore = ["S101", "S603"]  # asserts in tests; subprocess calls use fixed argv
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S108"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/xsample"]
+
+[[tool.mypy.overrides]]
+module = ["onnxruntime", "onnxruntime.*", "psutil", "soundfile", "pyaudiowpatch"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 180
+markers = [
+    "gpu: requires a working DirectML GPU (run with -m gpu)",
+    "hardware: records from real audio devices (run with -m hardware)",
+]
+addopts = "-m 'not gpu and not hardware' -ra"

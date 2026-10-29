@@ -1,0 +1,76 @@
+# --- Claude Code: keep personal settings local, share .mcp.json ---
+.claude/settings.local.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.python-version.local
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# --- Node / frontend ---
+node_modules/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+
+# --- Playwright ---
+test-results/
+playwright-report/
+playwright/.cache/
+.playwright-mcp/
+
+# --- AI models and weights (never commit; stored under %LOCALAPPDATA%\X-Sample\models) ---
+models/
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.gguf
+
+# --- User audio, projects and renders (private by default) ---
+projects/
+renders/
+recordings/
+cache/
+*.wav
+*.flac
+*.mp3
+*.ogg
+*.m4a
+*.aiff
+*.aif
+# Small, licensed test fixtures are allowed explicitly:
+!tests/fixtures/audio/**
+
+# --- Secrets and environment ---
+.env
+.env.*
+!.env.example
+
+# --- OS / editors ---
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.log
+
+# --- Test reports (machine-specific metrics) ---
+engine/test-reports/
+ui/.e2e-data/
+ui/openapi.json
+exports/
+*.opus
+*.aac
+*.oga
