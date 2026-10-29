@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from xsample import __version__
 from xsample.api import schemas
+from xsample.api.routes_analysis import build_analysis_router
 from xsample.api.routes_project import build_router
 from xsample.api.security import make_guard, make_token_dependency
 from xsample.config import EngineSettings
@@ -295,6 +296,7 @@ def create_app(settings: EngineSettings) -> FastAPI:
             raise HTTPException(status_code=404, detail="job not found") from exc
 
     api.include_router(build_router(state))
+    api.include_router(build_analysis_router(state))
     app.include_router(api)
 
     @app.api_route("/api/{rest:path}", methods=["GET", "POST"], include_in_schema=False)

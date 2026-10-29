@@ -22,7 +22,7 @@ from xsample.project.view import ProjectView
 if TYPE_CHECKING:
     from xsample.api.app import EngineState
 
-BUSY_KINDS = {"import_audio", "export_audio", "record_audio", "verify_project"}
+BUSY_KINDS = {"import_audio", "export_audio", "record_audio", "verify_project", "analyze_audio"}
 _MEDIA_TYPES = {".wav": "audio/wav", ".flac": "audio/flac"}
 
 

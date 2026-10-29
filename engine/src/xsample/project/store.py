@@ -80,6 +80,7 @@ def sanitize_name(name: str) -> str:
 def save_project(root: Path, project: Project) -> None:
     """Validate, then write project.json atomically, keeping the previous one as .bak."""
     Project.model_validate(project.model_dump())  # never persist an inconsistent manifest
+    project.format_version = FORMAT_VERSION  # older manifests are upgraded on write
     project.revision += 1
     project.modified_at = now_iso()
     data = project.model_dump_json(indent=2)

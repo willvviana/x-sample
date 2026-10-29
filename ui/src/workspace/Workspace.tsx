@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent 
 import type { ChannelMode, EngineClient, Job, ProjectList, ProjectView } from "../api/client";
 import { isActive } from "../jobs";
 import { usePolling } from "../usePolling";
+import { AnalysisPanel, type BeatGrid } from "./AnalysisPanel";
 import { Recorder } from "./Recorder";
 import { SamplesPanel } from "./SamplesPanel";
 import { Timeline, type Selection } from "./Timeline";
@@ -16,13 +17,20 @@ interface Props {
 
 const SAMPLE_RATES = [44100, 48000, 88200, 96000, 32000, 22050];
 const PREVIEW_LIMIT_S = 120;
-const AUDIO_KINDS = new Set(["import_audio", "export_audio", "record_audio", "verify_project"]);
+const AUDIO_KINDS = new Set([
+  "import_audio",
+  "export_audio",
+  "record_audio",
+  "verify_project",
+  "analyze_audio",
+]);
 
 const KIND_LABEL: Record<string, string> = {
   import_audio: "Import",
   export_audio: "Export",
   record_audio: "Recording",
   verify_project: "Verify",
+  analyze_audio: "Analysis",
 };
 
 export function Workspace({ client, onUnauthorized }: Props) {
@@ -34,6 +42,7 @@ export function Workspace({ client, onUnauthorized }: Props) {
   const [playhead, setPlayhead] = useState(0);
   const [selection, setSelection] = useState<Selection>();
   const [clipId, setClipId] = useState<string>();
+  const [grid, setGrid] = useState<BeatGrid>();
   const playbackStart = useRef(0);
   const playback = usePlayback();
 
@@ -266,6 +275,7 @@ export function Workspace({ client, onUnauthorized }: Props) {
               onSelect={setSelection}
               onPickClip={setClipId}
               onTogglePlay={togglePlay}
+              grid={grid}
             />
             {playback.error && <p className="notice bad">Playback failed: {playback.error}</p>}
             <EditBar
@@ -307,6 +317,14 @@ export function Workspace({ client, onUnauthorized }: Props) {
           </>
         )}
       </section>
+
+      <AnalysisPanel
+        client={client}
+        project={project}
+        preferredSourceId={activeClip?.source_id}
+        onGrid={setGrid}
+        onError={report}
+      />
 
       <TrackList client={client} project={project} apply={apply} />
 

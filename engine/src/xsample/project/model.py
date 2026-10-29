@@ -12,7 +12,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-FORMAT_VERSION = 1
+# 2: adds `analysis` (user corrections to detected analysis, ADR-0011). Format-1 manifests load
+# unchanged (no corrections); they are written back as format 2.
+FORMAT_VERSION = 2
+MAX_CHORD_CORRECTIONS = 4000
+MAX_TAGS = 100
 MAX_TRACKS = 64
 
 
@@ -125,6 +129,62 @@ class HistoryEntry(_M):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class BeatGridCorrection(_M):
+    """Corrections to the detected beat grid, applied in this order: bpm or scale, offset,
+    meter, downbeat shift."""
+
+    bpm: float | None = Field(
+        default=None, ge=20.0, le=300.0, description="replace the grid with a constant tempo"
+    )
+    scale: Literal["half", "normal", "double"] = "normal"
+    half_phase: int = Field(default=0, ge=0, le=1, description="which beats 'half' keeps")
+    offset: int = Field(default=0, ge=-192000, le=192000, description="shift in samples")
+    meter: int | None = Field(default=None, ge=2, le=12)
+    downbeat_shift: int = Field(default=0, ge=0, le=11, description="beats to move beat 1 by")
+
+    def is_identity(self) -> bool:
+        return self == BeatGridCorrection()
+
+
+class KeyCorrection(_M):
+    tonic: int = Field(ge=0, le=11)
+    mode: Literal["major", "minor"]
+
+
+class ChordCorrection(_M):
+    """Replaces whatever was detected between start and end (source samples)."""
+
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    root: int | None = Field(default=None, ge=0, le=11, description="None = no chord")
+    quality: Literal["maj", "min", "7", "maj7", "min7"] | None = None
+    bass: int | None = Field(default=None, ge=0, le=11)
+
+    @model_validator(mode="after")
+    def _check(self) -> ChordCorrection:
+        if self.end <= self.start:
+            raise ValueError("chord end must be after its start")
+        if (self.root is None) != (self.quality is None):
+            raise ValueError("root and quality must both be set, or both be empty")
+        return self
+
+
+class TagCorrection(_M):
+    kind: Literal["genre", "instrument"]
+    label: str = Field(min_length=1, max_length=60)
+
+
+class AnalysisCorrections(_M):
+    """User corrections for one source. Kept in the manifest, never in the analysis cache, so
+    re-running the analysis does not lose them."""
+
+    beat_grid: BeatGridCorrection = Field(default_factory=BeatGridCorrection)
+    key: KeyCorrection | None = None
+    chords: list[ChordCorrection] = Field(default_factory=list, max_length=MAX_CHORD_CORRECTIONS)
+    tags: list[TagCorrection] = Field(default_factory=list, max_length=MAX_TAGS)
+    updated_at: str | None = None
+
+
 class Project(_M):
     format_version: int = FORMAT_VERSION
     id: str
@@ -140,6 +200,7 @@ class Project(_M):
     samples: list[Sample] = Field(default_factory=list)
     exports: list[ExportRecord] = Field(default_factory=list)
     history: list[HistoryEntry] = Field(default_factory=list)
+    analysis: dict[str, AnalysisCorrections] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_integrity(self) -> Project:
@@ -244,6 +305,9 @@ def integrity_problems(p: Project) -> list[str]:
         total = frames_of(c.source_id)
         if total is not None and c.source_in + c.duration > total:
             problems.append(f"clip {c.id}: extends past the end of its source")
+    for source_id in p.analysis:
+        if source_id not in sources:
+            problems.append(f"analysis corrections for unknown source {source_id}")
     for smp in p.samples:
         smp_total = frames_of(smp.source_id)
         if smp.source_id not in sources:

@@ -223,8 +223,70 @@ def test_worker_crash_during_import_is_recoverable(
     assert os.path.isdir(view["path"])
 
 
+def _musical_wav(path: Path, seconds: int) -> Path:
+    """R&B groove with sax lead (exact tempo), tiled to the requested length."""
+    from tests.analysis_fixtures import Spec, render
+
+    y, _ = render(
+        Spec(bpm=96, key_root=5, minor=True, groove="rnb", sevenths=True, lead="sax", bars=16)
+    )
+    reps = int(np.ceil(seconds * 22050 / len(y)))
+    sf.write(path, np.tile(y, reps)[: seconds * 22050, None], 22050, subtype="PCM_16")
+    return path
+
+
+def _analyse(
+    client: TestClient, auth: dict[str, str], source_id: str
+) -> tuple[dict[str, Any], float]:
+    started = time.perf_counter()
+    url = f"/api/project/sources/{source_id}/analysis"
+    view = client.post(url, headers=auth, json={}).json()
+    job = wait_for_job(client, view["job"]["id"], auth, timeout=600)
+    return job, time.perf_counter() - started
+
+
+def test_ten_minute_analysis_memory_is_bounded(
+    client: TestClient, auth: dict[str, str], tmp_path: Path
+) -> None:
+    _project(client, auth, "LongAnalysis")
+    measured: dict[str, Any] = {}
+    for seconds in (60, 600):
+        job, _ = _import(client, auth, _musical_wav(tmp_path / f"groove_{seconds}.wav", seconds))
+        assert job["state"] == "succeeded", job
+        view = client.get("/api/project", headers=auth).json()
+        source = next(s for s in view["sources"] if s["original_name"] == f"groove_{seconds}.wav")
+        ajob, wall = _analyse(client, auth, source["id"])
+        assert ajob["state"] == "succeeded", ajob
+        result = client.get(f"/api/project/sources/{source['id']}/analysis", headers=auth).json()
+        rhythm = result["result"]["rhythm"]
+        assert abs(rhythm["bpm"] - 96) < 2
+        expected_beats = seconds * 96 / 60
+        assert abs(len(rhythm["beats"]) - expected_beats) < 0.02 * expected_beats
+        sidecar = Path(view["path"]) / "analysis" / "results" / source["id"]
+        measured[seconds] = {
+            "wall_s": round(wall, 2),
+            "worker_peak_mib": round(ajob["peak_worker_memory_bytes"] / MiB, 1),
+            "analysis_timings": ajob["result"]["timings"],
+            "sidecar_kib": round(sum(f.stat().st_size for f in sidecar.glob("*.json")) / 1024, 1),
+            "beats": len(rhythm["beats"]),
+            "chords": len(result["result"]["harmony"]["chords"]),
+        }
+    growth = measured[600]["worker_peak_mib"] - measured[60]["worker_peak_mib"]
+    # Features are kept per frame (not per sample); 10x the audio may cost tens of MiB, not 10x.
+    assert growth < 150, measured
+    assert measured[600]["worker_peak_mib"] < 600, measured
+    _report(
+        "analysis_10min_rnb_sax",
+        {
+            "backend": "cpu",
+            "growth_mib": round(growth, 1),
+            **{f"{k}s": v for k, v in measured.items()},
+        },
+    )
+
+
 def test_audio_job_kinds_are_not_public(client: TestClient, auth: dict[str, str]) -> None:
-    for kind in ("import_audio", "export_audio", "record_audio", "verify_project"):
+    for kind in ("import_audio", "export_audio", "record_audio", "verify_project", "analyze_audio"):
         r = client.post("/api/jobs", headers=auth, json={"kind": kind, "params": {}})
         assert r.status_code == 422, (kind, r.text)
 
