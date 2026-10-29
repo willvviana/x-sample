@@ -13,8 +13,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # 2: adds `analysis` (user corrections to detected analysis, ADR-0011). Format-1 manifests load
-# unchanged (no corrections); they are written back as format 2.
-FORMAT_VERSION = 2
+# unchanged (no corrections); they are written back as the current format.
+# 3: tag corrections may be kind "vocal" and may reject a detected tag (present=false).
+FORMAT_VERSION = 3
 MAX_CHORD_CORRECTIONS = 4000
 MAX_TAGS = 100
 MAX_TRACKS = 64
@@ -170,8 +171,11 @@ class ChordCorrection(_M):
 
 
 class TagCorrection(_M):
-    kind: Literal["genre", "instrument"]
+    """A user tag. present=False rejects a detected tag with the same kind and label."""
+
+    kind: Literal["genre", "instrument", "vocal"]
     label: str = Field(min_length=1, max_length=60)
+    present: bool = True
 
 
 class AnalysisCorrections(_M):

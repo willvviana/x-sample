@@ -816,6 +816,17 @@ select {
   border-radius: 999px;
   padding: 2px 4px 2px 10px;
 }
+.tag.uncertain {
+  border-style: dashed;
+}
+.tag-group {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.analysis-box .block {
+  display: block;
+}
 .chord-list ol {
   display: flex;
   flex-wrap: wrap;

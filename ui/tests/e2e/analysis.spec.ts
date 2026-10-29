@@ -76,7 +76,13 @@ test("analysis: run, beat grid on the waveform, corrections, tags, reset", async
   await expect(panel.getByTestId("analysis-key")).toHaveText("A minor");
   await panel.getByTestId("tag-input").fill("R&B");
   await panel.getByRole("button", { name: "Add tag" }).click();
-  await expect(panel.getByTestId("tag-list")).toContainText("R&B");
+  await expect(panel.getByTestId("tag-list-genre")).toContainText("R&B");
+  await panel.getByLabel("Tag kind").selectOption("vocal");
+  await panel.getByTestId("tag-input").fill("Singing");
+  await panel.getByRole("button", { name: "Add tag" }).click();
+  await expect(panel.getByTestId("tag-list-vocal")).toContainText("Singing");
+  await panel.getByRole("button", { name: "Remove Singing" }).click();
+  await expect(panel.getByTestId("tag-list-vocal")).toHaveCount(0);
 
   // Chord correction through the keyboard-accessible chord list.
   await panel.getByText(/Chord list/).click();
@@ -111,7 +117,7 @@ test("analysis: run, beat grid on the waveform, corrections, tags, reset", async
 
   await panel.getByTestId("analysis-reset").click();
   await expect(panel.getByTestId("analysis-key")).toHaveText("C major");
-  await expect(panel.getByTestId("tag-list")).not.toContainText("R&B");
+  await expect(panel.getByTestId("tag-list-genre")).toHaveCount(0);
   expect(Math.abs(bpmOf(await panel.getByTestId("analysis-bpm").textContent()) - 120)).toBeLessThan(
     2,
   );

@@ -34,6 +34,7 @@ from xsample.analysis.run import AnalysisCancelledError, analyze_file, cache_key
 from xsample.analysis.schema import ANALYZER_VERSION, ChordOut
 from xsample.project import store
 from xsample.project.model import (
+    FORMAT_VERSION,
     AnalysisCorrections,
     BeatGridCorrection,
     ChordCorrection,
@@ -270,7 +271,7 @@ def test_format_1_manifest_loads_and_is_upgraded(tmp_path: Path) -> None:
     loaded = store.load_project(root).project
     assert loaded.analysis == {}
     store.save_project(root, loaded)
-    assert json.loads(manifest.read_text("utf-8"))["format_version"] == 2
+    assert json.loads(manifest.read_text("utf-8"))["format_version"] == FORMAT_VERSION
 
 
 def test_corrections_for_unknown_source_are_rejected(tmp_path: Path) -> None:

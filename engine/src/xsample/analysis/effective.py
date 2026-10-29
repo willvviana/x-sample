@@ -11,17 +11,19 @@ import numpy as np
 from pydantic import BaseModel
 
 from xsample.analysis.harmony import PITCH_CLASSES
-from xsample.analysis.schema import AnalysisResult, ChordOut, KeyOut
+from xsample.analysis.schema import AnalysisResult, ChordOut, KeyOut, TagsOut
 from xsample.project.model import AnalysisCorrections, BeatGridCorrection, ChordCorrection
 
 QUALITY_SUFFIX = {"maj": "", "min": "m", "7": "7", "maj7": "maj7", "min7": "min7"}
 
 
 class EffectiveTag(BaseModel):
-    kind: Literal["genre", "instrument"]
+    kind: Literal["genre", "instrument", "vocal"]
     label: str
     origin: Literal["user", "detected"]
     confidence: float | None
+    uncertain: bool = False
+    evaluated: bool = False
 
 
 class EffectiveAnalysis(BaseModel):
@@ -111,6 +113,38 @@ def apply_chords(detected: list[ChordOut], fixes: list[ChordCorrection]) -> list
     return sorted(out, key=lambda c: c.start)
 
 
+def apply_tags(result: AnalysisResult, corr: AnalysisCorrections) -> list[EffectiveTag]:
+    """User tags first, then detected and uncertain tags the user has not rejected."""
+
+    def ident(kind: str, label: str) -> tuple[str, str]:
+        return kind, label.strip().lower()
+
+    user = {ident(t.kind, t.label) for t in corr.tags}
+    out = [
+        EffectiveTag(kind=t.kind, label=t.label, origin="user", confidence=None)
+        for t in corr.tags
+        if t.present
+    ]
+    detected = []
+    for field in (result.genres, result.instruments, result.vocals):
+        if not isinstance(field, TagsOut):
+            continue
+        for tag in field.tags:
+            if tag.status == "not_detected" or ident(tag.kind, tag.label) in user:
+                continue
+            detected.append(
+                EffectiveTag(
+                    kind=tag.kind,
+                    label=tag.label,
+                    origin="detected",
+                    confidence=tag.score,
+                    uncertain=tag.status == "uncertain",
+                    evaluated=tag.evaluated,
+                )
+            )
+    return out + sorted(detected, key=lambda t: (t.uncertain, -(t.confidence or 0.0)))
+
+
 def effective(result: AnalysisResult, corr: AnalysisCorrections) -> EffectiveAnalysis:
     r = result.rhythm
     beats, downbeats, meter = apply_beat_grid(
@@ -130,9 +164,7 @@ def effective(result: AnalysisResult, corr: AnalysisCorrections) -> EffectiveAna
             label=f"{PITCH_CLASSES[corr.key.tonic]} {corr.key.mode}",
             score=1.0,
         )
-    tags = [
-        EffectiveTag(kind=t.kind, label=t.label, origin="user", confidence=None) for t in corr.tags
-    ]
+    tags = apply_tags(result, corr)
     corrected: list[Literal["beat_grid", "key", "chords", "tags"]] = []
     if not corr.beat_grid.is_identity():
         corrected.append("beat_grid")

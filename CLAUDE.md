@@ -2,7 +2,7 @@
 
 Local-first AI music sample editor: capture or import audio, analyze it, separate stems, replace vocals/lyrics, transform genre, generate instruments, control fidelity, and edit in a multitrack timeline. Everything runs on the user's machine by default.
 
-Status: **v0.1.0 released (Phase 0 + Phase 1). v0.2.0 (musical analysis) in progress**: DSP analyzers, analysis job/cache/corrections/API/UI built; optional Beat This! small beat/downbeat model (ADR-0012, ONNX, CPU + verified DirectML); real-audio accuracy still below the acceptance targets (`docs/EVALUATION.md`). No generative models. See `docs/ROADMAP.md` for milestones (requirements 13 intro/outro and 14 YouTube publishing are planned) and `docs/DECISIONS.md` for ADRs (0001–0012 accepted).
+Status: **v0.1.0 released (Phase 0 + Phase 1). v0.2.0 (musical analysis) in progress**: DSP analyzers, analysis job/cache/corrections/API/UI built; optional Beat This! small beat/downbeat model (ADR-0012, ONNX, CPU + verified DirectML); optional PANNs MobileNetV1 tagger (ADR-0013); real-audio accuracy still below the acceptance targets (`docs/EVALUATION.md`). No generative models. Model inventory and candidates: `docs/MODELS.md`. See `docs/ROADMAP.md` for milestones (requirements 13 intro/outro and 14 YouTube publishing are planned) and `docs/DECISIONS.md` for ADRs (0001–0013 accepted).
 
 ## Target hardware (reference machine)
 
@@ -30,7 +30,10 @@ engine/                     Python 3.12 package `xsample` (uv-managed, uv.lock c
                             schema.py (versioned sidecar), run.py (worker orchestration),
                             effective.py (detected + corrections) — ADR-0011,
                             beat_model.py (Beat This! log-mel/chunking/postprocessing,
-                            pinned ONNX exports, BeatTracker) — ADR-0012
+                            pinned ONNX exports, BeatTracker) — ADR-0012,
+                            beat_dbn.py (bar-pointer HMM decoder; evaluated, not default),
+                            tagger.py (PANNs MobileNetV1 instrument/vocal/genre tags, 32 kHz
+                            log-mel, 10 s windows, pinned ONNX export) — ADR-0013
     project/                layout.py, model.py (manifest schema), store.py (atomic save/recovery/lock),
                             ops.py (edit operations), service.py (open project + job results), view.py, verify.py
     runtime/                adapters.py (CPU / DirectML / Vulkan adapters), probe.py + probe_cache.py,
@@ -57,8 +60,9 @@ Rules:
 - The UI holds no audio processing logic; the engine is the source of truth.
 - Non-destructive editing (ADR-0006, ADR-0009): source audio is never modified; positions are integer samples; the manifest is only changed through `ProjectService.edit`.
 - Audio job kinds (`import_audio`, `export_audio`, `record_audio`, `list_audio_devices`, `verify_project`, `analyze_audio`) are `public=False`; only the project routes submit them. Finished jobs are applied to the project in `EngineState._on_job_finished`.
-- Analysis results are sidecars in `analysis/results/<source>/<cache_key>.json` (key = media PCM hash + analyzer version + schema version + params + beat model identity when installed); bump `ANALYZER_VERSION` when results can change. User corrections live in the manifest (`analysis`), never in the cache. Never report unavailable recognition as a result; scores are not calibrated probabilities.
-- Beat model files are verified against `beat_model.PINNED` (the trust root), never against `registry.json`; the worker hashes the bytes it loads. DirectML is reported only after a strict, profiled run of the first chunk and a CPU parity check; otherwise the piece runs on CPU and the result says why. Clips shorter than one 1500-frame chunk use the dynamic export on CPU (never zero-pad to 1500). Torch is only for `tools/export_beat_this.py` in an isolated temporary venv.
+- Analysis results are sidecars in `analysis/results/<source>/<cache_key>.json` (key = media PCM hash + analyzer version + schema version + params + beat model and tagger identities when installed); bump `ANALYZER_VERSION` when results can change. User corrections live in the manifest (`analysis`), never in the cache. Never report unavailable recognition as a result; scores are not calibrated probabilities.
+- Beat model files are verified against `beat_model.PINNED` (the trust root), never against `registry.json`; the worker hashes the bytes it loads. DirectML is reported only after a strict, profiled run of the first chunk and a CPU parity check; otherwise the piece runs on CPU and the result says why. Clips shorter than one 1500-frame chunk use the dynamic export on CPU (never zero-pad to 1500). Torch is only for `tools/export_beat_this.py` and `tools/export_panns.py` in an isolated temporary venv.
+- The tagger file is verified against `tagger.PINNED` the same way. Its thresholds, label mapping and the `EVALUATED`/`GENRE_EVIDENCE` sets come from fixed rules (`tools/eval_tagger.py`, ADR-0013): never tune them to the evaluation data, and never report a genre as detected or a label as evaluated without that evidence. Changing them changes `tagger.identity()` and invalidates cached tags.
 - Evaluation datasets live in `%LOCALAPPDATA%\X-Sample\eval-datasets` (manifests with SHA-256, licenses), never in Git. Fetch only small subsets, with approval. `engine/tools/bench_synthetic.py` and `engine/tools/eval_real_audio.py` report synthetic and real-audio accuracy separately.
 - Recording only starts from an explicit user action; device listing opens no stream. WASAPI render/loopback entries must be the WASAPI host-API ones (the same name also exists under MME). Recordings never leave the machine (ADR-0010).
 

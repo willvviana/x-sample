@@ -306,21 +306,25 @@ def test_numpy_float32_pipeline_dtype() -> None:
 
 
 @pytest.mark.parametrize("backend", ["cpu", pytest.param("directml", marks=pytest.mark.gpu)])
-def test_ten_minute_analysis_with_beat_model_memory_is_bounded(
+def test_ten_minute_analysis_with_models_memory_is_bounded(
     client: TestClient, auth: dict[str, str], tmp_path: Path, settings: Any, backend: str
 ) -> None:
+    """Beat model and tagger together, as a user with both installed runs them."""
     import shutil
 
-    from xsample.analysis import beat_model
+    from xsample.analysis import beat_model, tagger
     from xsample.config import default_data_dir
+    from xsample.jobs.kinds import TAGGER_RAM
 
     real = default_data_dir() / "models"
-    if not beat_model.installed(real):
-        pytest.skip("Beat This! exports are not installed")
-    for name, path in beat_model.model_files(real).items():
-        target = beat_model.model_files(settings.models_dir)[name]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, target)
+    if not beat_model.installed(real) or not tagger.installed(real):
+        pytest.skip("Beat This! exports or the PANNs tagger are not installed")
+    files = [*beat_model.model_files(real).items(), (tagger.FILE, tagger.model_file(real))]
+    targets = {**beat_model.model_files(settings.models_dir)}
+    targets[tagger.FILE] = tagger.model_file(settings.models_dir)
+    for name, path in files:
+        targets[name].parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, targets[name])
     if backend == "directml":
         detect = client.post("/api/backends/detect", headers=auth).json()["id"]
         assert wait_for_job(client, detect, auth)["state"] == "succeeded"
@@ -337,22 +341,32 @@ def test_ten_minute_analysis_with_beat_model_memory_is_bounded(
         result = client.get(f"/api/project/sources/{source['id']}/analysis", headers=auth).json()
         tracker = result["result"]["beat_tracker"]
         assert tracker["method"] == "model" and tracker["backend"] == backend, tracker
+        tagged = result["result"]["tagger"]
+        assert tagged["backend"] == backend and tagged["notes"] == [], tagged
+        assert result["result"]["instruments"]["status"] == "available"
         rhythm = result["result"]["rhythm"]
         expected_beats = seconds * 96 / 60
         measured[seconds] = {
             "wall_s": round(wall, 2),
             "worker_peak_mib": round(ajob["peak_worker_memory_bytes"] / MiB, 1),
             "analysis_timings": ajob["result"]["timings"],
+            "tagger_s": result["result"]["timings"]["tagger_s"],
+            "instruments": [
+                (t["label"], t["score"])
+                for t in result["result"]["instruments"]["tags"]
+                if t["status"] != "not_detected"
+            ],
             "bpm": rhythm["bpm"],
             "beats": len(rhythm["beats"]),
             "expected_beats": expected_beats,
         }
     growth = measured[600]["worker_peak_mib"] - measured[60]["worker_peak_mib"]
-    # The log-mel spectrogram is ~15 MiB per 10 min; model sessions are a fixed cost.
+    # Both log-mel spectrograms together are ~30 MiB per 10 min; sessions are a fixed cost.
     assert growth < 200, measured
     # Must stay within the job's RAM estimate (jobs/kinds.py).
-    assert measured[600]["worker_peak_mib"] < (1900 if backend == "directml" else 1300), measured
+    limit = (1900 if backend == "directml" else 1300) + TAGGER_RAM // MiB
+    assert measured[600]["worker_peak_mib"] < limit, measured
     _report(
-        f"analysis_10min_beat_model_{backend}",
+        f"analysis_10min_models_{backend}",
         {"growth_mib": round(growth, 1), **{f"{k}s": v for k, v in measured.items()}},
     )

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from xsample.analysis import beat_model
+from xsample.analysis import beat_model, tagger
 from xsample.analysis.effective import EffectiveAnalysis, effective
 from xsample.analysis.run import cache_key
 from xsample.analysis.schema import ANALYZER_VERSION, AnalysisResult
@@ -130,9 +130,26 @@ def build_analysis_router(state: EngineState) -> APIRouter:
         )
         return {"beat_model_dir": str(models_dir), "beat_backend": "directml" if gpu else "cpu"}
 
+    def tagger_params(frames: int, sample_rate: int) -> dict[str, Any]:
+        """Tagger directory and backend for analyze_audio, if the export is installed.
+
+        DirectML is requested when detection found it; the worker verifies placement and
+        parity on the first window before it reports DirectML.
+        """
+        models_dir = state.settings.models_dir
+        if not tagger.installed(models_dir):
+            return {}
+        detected = (state.detection_snapshot().get("result") or {}).get("backends", {})
+        gpu = detected.get("directml", {}).get("state") == "available"
+        return {"tagger_dir": str(models_dir), "tagger_backend": "directml" if gpu else "cpu"}
+
     def expected_key(media_sha256: str) -> str:
-        installed = beat_model.installed(state.settings.models_dir)
-        return cache_key(media_sha256, beat_model.identity() if installed else None)
+        models_dir = state.settings.models_dir
+        return cache_key(
+            media_sha256,
+            beat_model.identity() if beat_model.installed(models_dir) else None,
+            tagger.identity() if tagger.installed(models_dir) else None,
+        )
 
     def view(source_id: str) -> AnalysisView:
         root, params, corrections = locate(source_id)
@@ -181,7 +198,8 @@ def build_analysis_router(state: EngineState) -> APIRouter:
         if current.status == "ready" and not req.force:
             return current
         _, params, _ = locate(source_id)
-        model = beat_model_params(int(params["frames"]), int(params["sample_rate"]))
+        frames, rate = int(params["frames"]), int(params["sample_rate"])
+        model = {**beat_model_params(frames, rate), **tagger_params(frames, rate)}
         state.jobs.submit("analyze_audio", {**params, **model})
         return view(source_id)
 

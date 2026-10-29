@@ -359,9 +359,29 @@ class BeatTracker:
         self,
         spect: F32,
         *,
+        postprocessor: str = "minimal",
         progress: Callable[[float], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> tuple[F64, F64, TrackerReport]:
+        """Beats and downbeats in seconds. postprocessor: "minimal" (peak picking, upstream
+        default) or "dbn" (tempo/meter-continuous bar-pointer decoding, beat_dbn.py)."""
+        beat, down, report = self.infer(spect, progress=progress, cancelled=cancelled)
+        if postprocessor == "dbn":
+            from xsample.analysis import beat_dbn
+
+            result = beat_dbn.decode(beat, down)
+            return result.beats, result.downbeats, report
+        beats, downs = postprocess(beat, down)
+        return beats, downs, report
+
+    def infer(
+        self,
+        spect: F32,
+        *,
+        progress: Callable[[float], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> tuple[F32, F32, TrackerReport]:
+        """Per-frame beat and downbeat logits (beat includes downbeats)."""
         t0 = time.perf_counter()
         short = is_short(len(spect))
         piece_notes = []
@@ -391,13 +411,12 @@ class BeatTracker:
             except InterruptedError as exc2:
                 raise BeatTrackingCancelledError from exc2
         backend = "cpu" if short else self.backend
-        beats, downs = postprocess(*logits)
         report = TrackerReport(
             backend=backend,
             notes=self.notes + piece_notes,
             inference_s=time.perf_counter() - t0,
         )
-        return beats, downs, report
+        return logits[0], logits[1], report
 
     def close(self) -> None:
         if self._gpu is not None:

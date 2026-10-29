@@ -37,7 +37,7 @@ from tests.analysis_fixtures import (  # noqa: E402
     mirex_key_score,
 )
 
-from xsample.analysis import beat_model  # noqa: E402
+from xsample.analysis import beat_dbn, beat_model  # noqa: E402
 from xsample.analysis.dsp import ANALYSIS_RATE, FeatureExtractor  # noqa: E402
 from xsample.analysis.harmony import analyze_harmony  # noqa: E402
 from xsample.analysis.rhythm import analyze_rhythm  # noqa: E402
@@ -104,10 +104,14 @@ def analyse(path: Path) -> tuple[Any, Any, float, float]:
     if BEAT_MODEL is not None:
         t1 = time.perf_counter()
         spect.append(mel.finish())
-        beats, downs, report = BEAT_MODEL.track(np.concatenate(spect))
+        beat, down, report = BEAT_MODEL.infer(np.concatenate(spect))
+        beats, downs = beat_model.postprocess(beat, down)
         NEURAL.update(
             beats=beats, downs=downs, secs=time.perf_counter() - t1, backend=report.backend
         )
+        t2 = time.perf_counter()
+        dbn = beat_dbn.decode(beat, down)
+        NEURAL.update(dbn_beats=dbn.beats, dbn_downs=dbn.downbeats, dbn_s=time.perf_counter() - t2)
     return rhythm, harmony, secs, features.duration_samples / ANALYSIS_RATE
 
 
@@ -137,6 +141,17 @@ def neural_fields(ref_beats: Any, ref_downs: Any, ref_bpm: float) -> dict[str, A
     }
     if ref_downs is not None:
         out["nn_downbeat_f"] = round(f_measure(list(downs), list(ref_downs)), 3)
+    dbeats = NEURAL["dbn_beats"]
+    dbpm = 60.0 / float(np.median(np.diff(dbeats))) if len(dbeats) > 2 else 0.0
+    out.update(
+        dbn_bpm_est=round(dbpm, 1),
+        **{f"dbn_{k}": v for k, v in tempo_scores(dbpm, ref_bpm).items()},
+        dbn_beat_f=round(f_measure(list(dbeats), list(ref_beats)), 3),
+        dbn_beat_f_any=round(any_level_f(dbeats, ref_beats), 3),
+        dbn_s=round(NEURAL["dbn_s"], 2),
+    )
+    if ref_downs is not None:
+        out["dbn_downbeat_f"] = round(f_measure(list(NEURAL["dbn_downs"]), list(ref_downs)), 3)
     out["nn_s"] = round(NEURAL["secs"], 2)
     out["nn_backend"] = NEURAL["backend"]
     return out
@@ -411,6 +426,11 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "nn_acc2",
         "nn_beat_f",
         "nn_beat_f_any",
+        "dbn_acc1",
+        "dbn_acc2",
+        "dbn_beat_f",
+        "dbn_beat_f_any",
+        "dbn_downbeat_f",
         "nn_downbeat_f",
         "key_mirex",
         "chord_majmin",

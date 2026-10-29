@@ -98,16 +98,41 @@ class AnalyzeParams(_Params):
     # Set by the engine when the Beat This! exports are installed and verified.
     beat_model_dir: str | None = Field(None, min_length=1, max_length=400)
     beat_backend: Literal["cpu", "directml"] = "cpu"
+    # Set by the engine when the PANNs tagger export is installed and verified.
+    tagger_dir: str | None = Field(None, min_length=1, max_length=400)
+    tagger_backend: Literal["cpu", "directml"] = "cpu"
+
+
+# Tagger (PANNs MobileNetV1, 10 s windows), measured on the reference machine: ~48 MiB
+# dedicated VRAM, process RSS 147 MiB (CPU) / 194 MiB (DirectML) for 10 min. With the beat
+# model the job peak did not rise (the models run in turn); the RAM margin is kept anyway.
+TAGGER_RAM = 300 * MiB
+TAGGER_VRAM = 128 * MiB
+
+
+def _beat_gpu(p: AnalyzeParams) -> bool:
+    return p.beat_model_dir is not None and p.beat_backend == "directml"
+
+
+def _tagger_gpu(p: AnalyzeParams) -> bool:
+    return p.tagger_dir is not None and p.tagger_backend == "directml"
 
 
 def _analyze_uses_gpu(p: BaseModel) -> bool:
     assert isinstance(p, AnalyzeParams)
-    return p.beat_model_dir is not None and p.beat_backend == "directml"
+    return _beat_gpu(p) or _tagger_gpu(p)
 
 
 def _analyze_vram(p: BaseModel) -> int:
-    # Measured peak on the RX 5700 XT: ~570 MiB dedicated (three 1500-frame attention maps).
-    return 768 * MiB if _analyze_uses_gpu(p) else 0
+    assert isinstance(p, AnalyzeParams)
+    # Measured peaks on the RX 5700 XT: beat model ~570 MiB dedicated (three 1500-frame
+    # attention maps); tagger ~48 MiB. The models run one after the other.
+    vram = 0
+    if _beat_gpu(p):
+        vram = 768 * MiB
+    if _tagger_gpu(p):
+        vram = max(vram, TAGGER_VRAM)
+    return vram
 
 
 def _analyze_ram(p: BaseModel) -> int:
@@ -115,9 +140,8 @@ def _analyze_ram(p: BaseModel) -> int:
     # Measured worker peak commit for 10 min: DSP 215 MiB, + model on CPU 1.06 GiB (the
     # 1500-frame attention arena), + DirectML 1.64 GiB (CPU reference session for the
     # parity check alongside the DirectML session). Flat with duration.
-    if p.beat_model_dir is None:
-        return 600 * MiB
-    return (1900 if p.beat_backend == "directml" else 1300) * MiB
+    base = 600 * MiB if p.beat_model_dir is None else (1900 if _beat_gpu(p) else 1300) * MiB
+    return base + (TAGGER_RAM if p.tagger_dir is not None else 0)
 
 
 def _zero(_: BaseModel) -> int:

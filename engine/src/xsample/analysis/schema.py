@@ -12,7 +12,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 # 2: beat_tracker, backend may be directml, timings.beat_model_s.
-SCHEMA_VERSION = 2
+# 3: tagger, genres/instruments/vocals may be TagsOut, timings.tagger_s.
+SCHEMA_VERSION = 3
 # Bump whenever an analyzer change can alter results; it invalidates every cached sidecar.
 ANALYZER_VERSION = "dsp-0.2.0"
 ANALYZER_ID = "xsample.analysis.dsp"
@@ -177,9 +178,52 @@ class BeatTrackerOut(_M):
     notes: list[str] = Field(default_factory=list)
 
 
+class TagSegment(_M):
+    """A stretch of windows where the label scored at or above the uncertain threshold."""
+
+    start: int
+    end: int
+    score: float
+
+
+class TagOut(_M):
+    kind: Literal["genre", "instrument", "vocal"]
+    label: str
+    audioset_classes: list[str]
+    score: float = Field(description="highest window score (AudioSet sigmoid, not calibrated)")
+    status: Literal["detected", "uncertain", "not_detected"]
+    evaluated: bool = Field(
+        description="per-class precision/recall was measured on labelled held-out audio "
+        "(docs/EVALUATION.md); false means its accuracy has not been measured"
+    )
+    activity: list[TagSegment]
+
+
+class TagsOut(_M):
+    status: Literal["available"] = "available"
+    tags: list[TagOut]
+
+
+class TaggerOut(_M):
+    """Which tagging model produced genres, instruments and vocals, and where it ran."""
+
+    model_id: str
+    model_name: str
+    model_sha256: str
+    license: str
+    attribution: str
+    backend: Literal["cpu", "directml"] = "cpu"
+    window_s: float
+    hop_s: float
+    detect_threshold: float
+    uncertain_threshold: float
+    notes: list[str] = Field(default_factory=list)
+
+
 class Timings(_M):
     decode_features_s: float
     beat_model_s: float = 0.0
+    tagger_s: float = 0.0
     rhythm_s: float
     harmony_s: float
     structure_s: float
@@ -205,10 +249,11 @@ class AnalysisResult(_M):
     created_at: str
     timings: Timings
     beat_tracker: BeatTrackerOut
+    tagger: TaggerOut | None = None
     rhythm: RhythmOut
     harmony: HarmonyOut
     structure: StructureOut
     boundaries: BoundariesOut
-    genres: Unavailable
-    instruments: Unavailable
-    vocals: Unavailable
+    genres: TagsOut | Unavailable = Field(discriminator="status")
+    instruments: TagsOut | Unavailable = Field(discriminator="status")
+    vocals: TagsOut | Unavailable = Field(discriminator="status")

@@ -6,6 +6,7 @@ import type {
   ChordOut,
   EngineClient,
   ProjectView,
+  TagOut,
 } from "../api/client";
 import { usePolling } from "../usePolling";
 import { formatPosition } from "./time";
@@ -168,21 +169,28 @@ export function AnalysisPanel({ client, project, preferredSourceId, onGrid, onEr
       {result && effective && id && (
         <>
           <p className="small muted" data-testid="analysis-provenance">
+            Ran on <strong data-testid="analysis-backend">{result.backend.toUpperCase()}</strong>
             {result.beat_tracker.method === "model" ? (
               <>
-                Beats and downbeats:{" "}
-                <strong data-testid="analysis-beat-model">{result.beat_tracker.model_name}</strong>{" "}
-                on <strong data-testid="analysis-backend">{result.backend.toUpperCase()}</strong> (
-                {result.timings.beat_model_s.toFixed(1)} s); everything else: signal processing on
-                CPU
+                {" "}
+                · beats and downbeats:{" "}
+                <strong data-testid="analysis-beat-model">
+                  {result.beat_tracker.model_name}
+                </strong>{" "}
+                on {result.beat_tracker.backend.toUpperCase()} (
+                {result.timings.beat_model_s.toFixed(1)} s)
               </>
-            ) : (
+            ) : null}
+            {result.tagger ? (
               <>
-                Ran on{" "}
-                <strong data-testid="analysis-backend">{result.backend.toUpperCase()}</strong>{" "}
-                (signal-processing analyzers, no AI model)
+                {" "}
+                · instruments, vocals and genres: {result.tagger.model_name} on{" "}
+                {result.tagger.backend.toUpperCase()} ({result.timings.tagger_s.toFixed(1)} s)
               </>
-            )}{" "}
+            ) : null}
+            {result.beat_tracker.method === "model" || result.tagger
+              ? " · everything else: signal processing on CPU"
+              : " (signal-processing analyzers, no AI model)"}{" "}
             · {result.analyzer_version} · {result.timings.total_s.toFixed(1)} s ·{" "}
             {result.created_at}
           </p>
@@ -601,6 +609,24 @@ function KeyEditor({
   );
 }
 
+type TagKind = "genre" | "instrument" | "vocal";
+const KIND_TITLE: Record<TagKind, string> = {
+  instrument: "Instruments",
+  vocal: "Vocals",
+  genre: "Genres",
+};
+
+function tagKey(kind: string, label: string): string {
+  return `${kind}:${label.trim().toLowerCase()}`;
+}
+
+function activityText(tag: TagOut | undefined, rate: number): string {
+  if (!tag || tag.activity.length === 0) return "";
+  return tag.activity
+    .map((a) => `${formatPosition(a.start, rate)}–${formatPosition(a.end, rate)}`)
+    .join(", ");
+}
+
 function TagEditor({
   view,
   onCorrect,
@@ -608,44 +634,156 @@ function TagEditor({
   view: AnalysisView;
   onCorrect: (c: Partial<AnalysisCorrections>) => void;
 }) {
-  const [kind, setKind] = useState<"genre" | "instrument">("genre");
+  const [kind, setKind] = useState<TagKind>("genre");
   const [label, setLabel] = useState("");
   const tags = view.corrections.tags ?? [];
   const result = view.result;
+  const shown = view.effective?.tags ?? [];
+  const fields = result
+    ? ([
+        ["instrument", result.instruments],
+        ["vocal", result.vocals],
+        ["genre", result.genres],
+      ] as const)
+    : [];
+  const detected = new Map<string, TagOut>();
+  for (const [, field] of fields) {
+    if (field.status === "available") {
+      for (const t of field.tags) detected.set(tagKey(t.kind, t.label), t);
+    }
+  }
+  const unavailable = fields.filter(([, f]) => f.status === "unavailable");
+  const rejected = tags.filter((t) => !t.present);
+  const rate = result?.sample_rate ?? 1;
+  const tagger = result?.tagger;
   return (
     <fieldset className="analysis-box" data-testid="tag-editor">
-      <legend>Genres and instruments</legend>
-      {result && (
+      <legend>Instruments, vocals and genres</legend>
+      {unavailable.length > 0 && (
         <ul className="small muted unavailable">
-          <li>Genre recognition: {result.genres.reason}</li>
-          <li>Instrument recognition: {result.instruments.reason}</li>
-          <li>Vocal activity: {result.vocals.reason}</li>
+          {unavailable.map(([k, f]) => (
+            <li key={k}>
+              {k === "genre"
+                ? "Genre recognition"
+                : k === "instrument"
+                  ? "Instrument recognition"
+                  : "Vocal activity"}
+              : {"reason" in f ? f.reason : ""}
+            </li>
+          ))}
         </ul>
       )}
-      <ul className="tag-list" data-testid="tag-list">
-        {tags.map((t) => (
-          <li key={`${t.kind}:${t.label}`} className="tag">
-            <span className="muted small">{t.kind}</span> {t.label}
+      {tagger && (
+        <p className="small muted" data-testid="tagger-provenance">
+          Detected by <strong>{tagger.model_name}</strong> on{" "}
+          <strong data-testid="tagger-backend">{tagger.backend.toUpperCase()}</strong> (
+          {result.timings.tagger_s.toFixed(1)} s) in {tagger.window_s.toFixed(0)} s windows. Scores
+          are model outputs, not probabilities: detected from {pct(tagger.detect_threshold)}, shown
+          as uncertain from {pct(tagger.uncertain_threshold)}. Labels marked “not evaluated” have no
+          measured accuracy yet. License: {tagger.license}
+          {(tagger.notes ?? []).map((note) => (
+            <span key={note} className="block" data-testid="tagger-note">
+              {note}
+            </span>
+          ))}
+        </p>
+      )}
+      {(["instrument", "vocal", "genre"] as const).map((k) => {
+        const group = shown.filter((t) => t.kind === k);
+        if (group.length === 0) {
+          const checked = fields.some(([fk, f]) => fk === k && f.status === "available");
+          return checked ? (
+            <p key={k} className="small muted" data-testid={`tag-none-${k}`}>
+              {KIND_TITLE[k]}: none detected
+            </p>
+          ) : null;
+        }
+        return (
+          <div key={k} className="tag-group">
+            <span className="small muted">{KIND_TITLE[k]}</span>
+            <ul className="tag-list" data-testid={`tag-list-${k}`}>
+              {group.map((t) => {
+                const info = detected.get(tagKey(t.kind, t.label));
+                const activity = activityText(info, rate);
+                const user = t.origin === "user";
+                return (
+                  <li
+                    key={tagKey(t.kind, t.label)}
+                    className={`tag${t.uncertain ? " uncertain" : ""}`}
+                    title={activity ? `Active: ${activity}` : undefined}
+                    data-testid="tag"
+                    data-origin={t.origin}
+                  >
+                    {t.label}
+                    {!user && <span className="muted small">{pct(t.confidence)}</span>}
+                    {t.uncertain && <span className="muted small">uncertain</span>}
+                    {!user && !t.evaluated && <span className="muted small">not evaluated</span>}
+                    {user && <span className="muted small">yours</span>}
+                    {!user && t.uncertain && (
+                      <button
+                        type="button"
+                        className="secondary small-btn"
+                        aria-label={`Confirm ${t.label}`}
+                        onClick={() => {
+                          onCorrect({
+                            tags: [...tags, { kind: t.kind, label: t.label, present: true }],
+                          });
+                        }}
+                      >
+                        ✓
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="secondary small-btn"
+                      aria-label={user ? `Remove ${t.label}` : `Not present: ${t.label}`}
+                      onClick={() => {
+                        const rest = tags.filter(
+                          (x) => tagKey(x.kind, x.label) !== tagKey(t.kind, t.label),
+                        );
+                        onCorrect({
+                          tags:
+                            user && !info
+                              ? rest
+                              : [...rest, { kind: t.kind, label: t.label, present: false }],
+                        });
+                      }}
+                    >
+                      ×
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        );
+      })}
+      {rejected.length > 0 && (
+        <p className="small muted" data-testid="tag-rejected">
+          Marked not present:{" "}
+          {rejected.map((t) => (
             <button
               type="button"
               className="secondary small-btn"
-              aria-label={`Remove ${t.label}`}
+              key={tagKey(t.kind, t.label)}
+              aria-label={`Undo ${t.label}`}
               onClick={() => {
                 onCorrect({ tags: tags.filter((x) => x !== t) });
               }}
             >
-              ×
+              {t.label} ↺
             </button>
-          </li>
-        ))}
-      </ul>
+          ))}
+        </p>
+      )}
       <form
         className="row wrap"
         onSubmit={(e) => {
           e.preventDefault();
           const value = label.trim();
           if (!value) return;
-          onCorrect({ tags: [...tags, { kind, label: value }] });
+          const rest = tags.filter((x) => tagKey(x.kind, x.label) !== tagKey(kind, value));
+          onCorrect({ tags: [...rest, { kind, label: value, present: true }] });
           setLabel("");
         }}
       >
@@ -653,11 +791,12 @@ function TagEditor({
           aria-label="Tag kind"
           value={kind}
           onChange={(e) => {
-            setKind(e.target.value as "genre" | "instrument");
+            setKind(e.target.value as TagKind);
           }}
         >
           <option value="genre">Genre</option>
           <option value="instrument">Instrument</option>
+          <option value="vocal">Vocal</option>
         </select>
         <input
           aria-label="Tag"
@@ -692,7 +831,8 @@ function TagEditor({
             "Bass",
             "Drums",
             "Guitar",
-            "Vocals",
+            "Singing",
+            "Rapping",
           ].map((s) => (
             <option key={s} value={s} />
           ))}

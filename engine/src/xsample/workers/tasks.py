@@ -195,14 +195,17 @@ def verify_project(ctx: TaskContext, params: dict[str, Any]) -> dict[str, Any]:
 def analyze_audio(ctx: TaskContext, params: dict[str, Any]) -> dict[str, Any]:
     from pathlib import Path
 
-    from xsample.analysis import beat_model, run
+    from xsample.analysis import beat_model, run, tagger
     from xsample.project import layout
 
     root = Path(params["project_dir"])
     media = layout.resolve_inside(root, params["media_path"])
     model_dir = params.get("beat_model_dir")
+    tagger_dir = params.get("tagger_dir")
     key = run.cache_key(
-        params["media_sha256"], beat_model.identity() if model_dir is not None else None
+        params["media_sha256"],
+        beat_model.identity() if model_dir is not None else None,
+        tagger.identity() if tagger_dir is not None else None,
     )
     out = layout.resolve_inside(root, f"{layout.ANALYSIS_RESULTS}/{params['source_id']}/{key}.json")
     ctx.progress(0.0, "Reading audio")
@@ -217,6 +220,8 @@ def analyze_audio(ctx: TaskContext, params: dict[str, Any]) -> dict[str, Any]:
             cancelled=ctx.cancelled,
             beat_model_dir=Path(model_dir) if model_dir is not None else None,
             beat_backend=params.get("beat_backend", "cpu"),
+            tagger_dir=Path(tagger_dir) if tagger_dir is not None else None,
+            tagger_backend=params.get("tagger_backend", "cpu"),
         )
     except run.AnalysisCancelledError as exc:
         raise TaskCancelledError() from exc

@@ -19,6 +19,7 @@ export type AnalysisResult = components["schemas"]["AnalysisResult"];
 export type AnalysisCorrections = components["schemas"]["AnalysisCorrections"];
 export type EffectiveAnalysis = components["schemas"]["EffectiveAnalysis"];
 export type ChordOut = components["schemas"]["ChordOut"];
+export type TagOut = components["schemas"]["TagOut"];
 
 // Same origin when the engine serves the built UI; the engine port during `vite` dev.
 const ENGINE_URL: string =

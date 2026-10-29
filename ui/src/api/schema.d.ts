@@ -647,7 +647,7 @@ export interface components {
     AnalysisResult: {
       /**
        * Schema Version
-       * @default 2
+       * @default 3
        */
       schema_version: number;
       /**
@@ -687,13 +687,17 @@ export interface components {
       created_at: string;
       timings: components["schemas"]["Timings"];
       beat_tracker: components["schemas"]["BeatTrackerOut"];
+      tagger?: components["schemas"]["TaggerOut"] | null;
       rhythm: components["schemas"]["RhythmOut"];
       harmony: components["schemas"]["HarmonyOut"];
       structure: components["schemas"]["StructureOut"];
       boundaries: components["schemas"]["BoundariesOut"];
-      genres: components["schemas"]["Unavailable"];
-      instruments: components["schemas"]["Unavailable"];
-      vocals: components["schemas"]["Unavailable"];
+      /** Genres */
+      genres: components["schemas"]["TagsOut"] | components["schemas"]["Unavailable"];
+      /** Instruments */
+      instruments: components["schemas"]["TagsOut"] | components["schemas"]["Unavailable"];
+      /** Vocals */
+      vocals: components["schemas"]["TagsOut"] | components["schemas"]["Unavailable"];
     };
     /** AnalysisView */
     AnalysisView: {
@@ -1030,7 +1034,7 @@ export interface components {
        * Kind
        * @enum {string}
        */
-      kind: "genre" | "instrument";
+      kind: "genre" | "instrument" | "vocal";
       /** Label */
       label: string;
       /**
@@ -1040,6 +1044,16 @@ export interface components {
       origin: "user" | "detected";
       /** Confidence */
       confidence: number | null;
+      /**
+       * Uncertain
+       * @default false
+       */
+      uncertain: boolean;
+      /**
+       * Evaluated
+       * @default false
+       */
+      evaluated: boolean;
     };
     /** ExportRecord */
     ExportRecord: {
@@ -1690,15 +1704,106 @@ export interface components {
       /** Test Tasks Enabled */
       test_tasks_enabled: boolean;
     };
-    /** TagCorrection */
+    /**
+     * TagCorrection
+     * @description A user tag. present=False rejects a detected tag with the same kind and label.
+     */
     TagCorrection: {
       /**
        * Kind
        * @enum {string}
        */
-      kind: "genre" | "instrument";
+      kind: "genre" | "instrument" | "vocal";
       /** Label */
       label: string;
+      /**
+       * Present
+       * @default true
+       */
+      present: boolean;
+    };
+    /** TagOut */
+    TagOut: {
+      /**
+       * Kind
+       * @enum {string}
+       */
+      kind: "genre" | "instrument" | "vocal";
+      /** Label */
+      label: string;
+      /** Audioset Classes */
+      audioset_classes: string[];
+      /**
+       * Score
+       * @description highest window score (AudioSet sigmoid, not calibrated)
+       */
+      score: number;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "detected" | "uncertain" | "not_detected";
+      /**
+       * Evaluated
+       * @description per-class precision/recall was measured on labelled held-out audio (docs/EVALUATION.md); false means its accuracy has not been measured
+       */
+      evaluated: boolean;
+      /** Activity */
+      activity: components["schemas"]["TagSegment"][];
+    };
+    /**
+     * TagSegment
+     * @description A stretch of windows where the label scored at or above the uncertain threshold.
+     */
+    TagSegment: {
+      /** Start */
+      start: number;
+      /** End */
+      end: number;
+      /** Score */
+      score: number;
+    };
+    /**
+     * TaggerOut
+     * @description Which tagging model produced genres, instruments and vocals, and where it ran.
+     */
+    TaggerOut: {
+      /** Model Id */
+      model_id: string;
+      /** Model Name */
+      model_name: string;
+      /** Model Sha256 */
+      model_sha256: string;
+      /** License */
+      license: string;
+      /** Attribution */
+      attribution: string;
+      /**
+       * Backend
+       * @default cpu
+       * @enum {string}
+       */
+      backend: "cpu" | "directml";
+      /** Window S */
+      window_s: number;
+      /** Hop S */
+      hop_s: number;
+      /** Detect Threshold */
+      detect_threshold: number;
+      /** Uncertain Threshold */
+      uncertain_threshold: number;
+      /** Notes */
+      notes?: string[];
+    };
+    /** TagsOut */
+    TagsOut: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      status: "available";
+      /** Tags */
+      tags: components["schemas"]["TagOut"][];
     };
     /** TempoCandidateOut */
     TempoCandidateOut: {
@@ -1728,6 +1833,11 @@ export interface components {
        * @default 0
        */
       beat_model_s: number;
+      /**
+       * Tagger S
+       * @default 0
+       */
+      tagger_s: number;
       /** Rhythm S */
       rhythm_s: number;
       /** Harmony S */
@@ -1788,9 +1898,8 @@ export interface components {
      */
     Unavailable: {
       /**
-       * Status
-       * @default unavailable
-       * @constant
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
        */
       status: "unavailable";
       /** Reason */

@@ -3,7 +3,8 @@
 Runs inside a worker process. Audio is decoded and resampled by FFmpeg in bounded chunks, so
 memory does not grow with the raw audio length (features are kept at frame rate only). When
 the Beat This! model is installed, beats and downbeats come from it (beat_model.py) and the
-DSP tracker remains the fallback.
+DSP tracker remains the fallback. When the PANNs tagger is installed, a second streamed pass
+at 32 kHz tags instruments, vocals and genres (tagger.py); otherwise they are unavailable.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from xsample.analysis import beat_model
+from xsample.analysis import beat_model, tagger
 from xsample.analysis.dsp import ANALYSIS_RATE, FeatureExtractor, Features
 from xsample.analysis.harmony import PITCH_CLASSES, HarmonyResult, analyze_harmony
 from xsample.analysis.rhythm import RhythmResult, analyze_rhythm, apply_tracked_beats
@@ -40,6 +41,10 @@ from xsample.analysis.schema import (
     RhythmOut,
     SectionOut,
     StructureOut,
+    TaggerOut,
+    TagOut,
+    TagSegment,
+    TagsOut,
     TempoCandidateOut,
     TempoPoint,
     Timings,
@@ -50,24 +55,31 @@ from xsample.analysis.structure import StructureResult, analyze_structure
 PARAMS: dict[str, float | int | str] = {"analysis_rate": ANALYSIS_RATE}
 CHUNK_FRAMES = 65536
 MODEL_PENDING = (
-    "Needs a recognition model that has not been approved or installed yet; "
+    "No tagging model is installed (PANNs MobileNetV1, docs/MODELS.md); "
     "add tags manually meanwhile."
 )
+TOO_SHORT = "Too short to tag (under 1 s); add tags manually."
+
+TagFields = tuple[TagsOut | Unavailable, TagsOut | Unavailable, TagsOut | Unavailable]
 
 
 class AnalysisCancelledError(Exception):
     pass
 
 
-def cache_key(media_sha256: str, beat_model_id: str | None = None) -> str:
-    """Key of the sidecar for this audio, analyzer version and beat model.
+def cache_key(
+    media_sha256: str, beat_model_id: str | None = None, tagger_id: str | None = None
+) -> str:
+    """Key of the sidecar for this audio, analyzer version and models.
 
-    The beat model identity is part of the key (installing or removing it makes older
+    Model identities are part of the key (installing or removing a model makes older
     results stale). The backend is not: DirectML results are parity-checked against CPU.
     """
     material: list[Any] = [media_sha256, ANALYZER_VERSION, SCHEMA_VERSION, PARAMS]
     if beat_model_id is not None:
         material.append({"beat_model": beat_model_id})
+    if tagger_id is not None:
+        material.append({"tagger": tagger_id})
     blob = json.dumps(material, sort_keys=True).encode()
     return hashlib.sha256(blob).hexdigest()[:20]
 
@@ -116,8 +128,18 @@ def build_result(
     timings: Timings,
     beat_tracker: BeatTrackerOut | None = None,
     sidecar_key: str | None = None,
+    tagger_out: TaggerOut | None = None,
+    tags: TagFields | None = None,
 ) -> AnalysisResult:
     tracker = beat_tracker or BeatTrackerOut(method="dsp")
+    genres, instruments, vocals = tags or (
+        Unavailable(reason=MODEL_PENDING),
+        Unavailable(reason=MODEL_PENDING),
+        Unavailable(reason=MODEL_PENDING),
+    )
+    used_gpu = tracker.backend == "directml" or (
+        tagger_out is not None and tagger_out.backend == "directml"
+    )
 
     def pos(t: float) -> int:
         return int(min(max(round(t * sample_rate), 0), frames))
@@ -221,7 +243,7 @@ def build_result(
     )
     return AnalysisResult(
         schema_version=SCHEMA_VERSION,
-        backend=tracker.backend,
+        backend="directml" if used_gpu else "cpu",
         source_id=source_id,
         cache_key=sidecar_key or cache_key(media_sha256),
         media_sha256=media_sha256,
@@ -232,15 +254,14 @@ def build_result(
         created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         timings=timings,
         beat_tracker=tracker,
+        tagger=tagger_out,
         rhythm=rhythm_out,
         harmony=harmony_out,
         structure=structure_out,
         boundaries=boundaries,
-        genres=Unavailable(reason=MODEL_PENDING),
-        instruments=Unavailable(reason=MODEL_PENDING),
-        vocals=Unavailable(
-            reason="Vocal activity needs a vocal detection or separation model (planned)."
-        ),
+        genres=genres,
+        instruments=instruments,
+        vocals=vocals,
     )
 
 
@@ -316,11 +337,14 @@ def analyze_file(
     decode: Callable[..., Any] | None = None,
     beat_model_dir: Path | None = None,
     beat_backend: str = "cpu",
+    tagger_dir: Path | None = None,
+    tagger_backend: str = "cpu",
 ) -> AnalysisResult:
-    """Analyse one file. With `beat_model_dir`, beats come from the installed model.
+    """Analyse one file. With `beat_model_dir`, beats come from the installed model; with
+    `tagger_dir`, instruments, vocals and genres come from the installed tagger.
 
-    The sidecar key reflects the request (model installed or not); `beat_tracker` in the
-    result says what actually ran, including a DSP fallback if the model failed to load.
+    The sidecar key reflects the request (models installed or not); `beat_tracker` and
+    `tagger` in the result say what actually ran, including fallbacks and load failures.
     """
     total_analysis_frames = int(frames * ANALYSIS_RATE / sample_rate)
     t0 = time.perf_counter()
@@ -367,16 +391,25 @@ def analyze_file(
     if cancelled():
         raise AnalysisCancelledError
     t3 = time.perf_counter()
-    progress(0.95, "Sections")
+    progress(0.9, "Sections")
     structure = analyze_structure(features, rhythm.beats, rhythm.downbeats)
     t4 = time.perf_counter()
+    tagger_out: TaggerOut | None = None
+    tags: TagFields | None = None
+    if tagger_dir is not None:
+        progress(0.92, "Instruments, vocals and genres")
+        tagger_out, tags = _tag(
+            tagger_dir, tagger_backend, media_path, decode, sample_rate, frames, progress, cancelled
+        )
+    t5 = time.perf_counter()
     timings = Timings(
         decode_features_s=round(t1 - t0, 3),
         beat_model_s=round(t_model - t1, 3),
+        tagger_s=round(t5 - t4, 3),
         rhythm_s=round(t2 - t_model, 3),
         harmony_s=round(t3 - t2, 3),
         structure_s=round(t4 - t3, 3),
-        total_s=round(t4 - t0, 3),
+        total_s=round(t5 - t0, 3),
     )
     return build_result(
         features,
@@ -389,8 +422,108 @@ def analyze_file(
         frames=frames,
         timings=timings,
         beat_tracker=tracker_out,
-        sidecar_key=cache_key(media_sha256, beat_model.identity() if use_model else None),
+        sidecar_key=cache_key(
+            media_sha256,
+            beat_model.identity() if use_model else None,
+            tagger.identity() if tagger_dir is not None else None,
+        ),
+        tagger_out=tagger_out,
+        tags=tags,
     )
+
+
+def _tag(
+    models_dir: Path,
+    backend: str,
+    media_path: Path,
+    decode: Callable[..., Any],
+    sample_rate: int,
+    frames: int,
+    progress: Callable[[float, str], None],
+    cancelled: Callable[[], bool],
+) -> tuple[TaggerOut, TagFields]:
+    def out(used: str, notes: list[str]) -> TaggerOut:
+        return TaggerOut(
+            model_id=tagger.MODEL_ID,
+            model_name=tagger.DISPLAY_NAME,
+            model_sha256=tagger.PINNED[0],
+            license=tagger.LICENSE,
+            attribution=tagger.ATTRIBUTION,
+            backend=used,  # type: ignore[arg-type]
+            window_s=tagger.WINDOW / tagger.FPS,
+            hop_s=tagger.WINDOW_HOP / tagger.FPS,
+            detect_threshold=tagger.DETECT_THRESHOLD,
+            uncertain_threshold=tagger.UNCERTAIN_THRESHOLD,
+            notes=notes,
+        )
+
+    def unavailable(reason: str) -> TagFields:
+        return Unavailable(reason=reason), Unavailable(reason=reason), Unavailable(reason=reason)
+
+    # The tagger needs 32 kHz (content up to 14 kHz), so it reads the audio a second time.
+    mel = tagger.LogMelStream()
+    parts = []
+    total = max(1, int(frames * tagger.SAMPLE_RATE / sample_rate))
+    done = 0
+    for chunk in decode(
+        media_path,
+        out_channels=1,
+        sample_rate=tagger.SAMPLE_RATE,
+        chunk_frames=CHUNK_FRAMES,
+        cancelled=cancelled,
+    ):
+        if cancelled():
+            raise AnalysisCancelledError
+        mono = np.ascontiguousarray(chunk[:, 0] if chunk.ndim == 2 else chunk, dtype=np.float32)
+        parts.append(mel.push(mono))
+        done += len(mono)
+        progress(0.92 + 0.03 * min(1.0, done / total), "Instruments, vocals and genres")
+    parts.append(mel.finish())
+    logmel = np.concatenate(parts)
+    if len(logmel) < tagger.MIN_FRAMES:
+        return out("cpu", []), unavailable(TOO_SHORT)
+    try:
+        model = tagger.Tagger(models_dir, backend)
+    except Exception as exc:
+        # A broken install must not block analysis: report it, tags stay unavailable.
+        reason = f"The tagging model could not be loaded ({type(exc).__name__}: {exc})."
+        return out("cpu", [reason]), unavailable(reason)
+    try:
+        starts, scores, report = model.tag(
+            logmel,
+            progress=lambda f: progress(0.95 + 0.04 * f, "Instruments, vocals and genres"),
+            cancelled=cancelled,
+        )
+    except tagger.TaggingCancelledError as exc:
+        raise AnalysisCancelledError from exc
+    finally:
+        model.close()
+
+    def pos(t: float) -> int:
+        return int(min(max(round(t * sample_rate), 0), frames))
+
+    by_kind: dict[str, list[TagOut]] = {"genre": [], "instrument": [], "vocal": []}
+    for summary in tagger.summarise(starts, scores, len(logmel)):
+        by_kind[summary.label.kind].append(
+            TagOut(
+                kind=summary.label.kind,
+                label=summary.label.name,
+                audioset_classes=list(summary.label.class_names),
+                score=round(summary.score, 4),
+                status=summary.status,
+                evaluated=summary.evaluated,
+                activity=[
+                    TagSegment(start=pos(a), end=pos(z), score=round(sc, 4))
+                    for a, z, sc in summary.activity
+                ],
+            )
+        )
+    fields: TagFields = (
+        TagsOut(tags=by_kind["genre"]),
+        TagsOut(tags=by_kind["instrument"]),
+        TagsOut(tags=by_kind["vocal"]),
+    )
+    return out(report.backend, report.notes), fields
 
 
 def _track_beats(
