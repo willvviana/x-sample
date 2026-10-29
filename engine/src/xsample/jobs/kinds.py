@@ -95,6 +95,29 @@ class AnalyzeParams(_Params):
     media_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     sample_rate: int = Field(ge=8000, le=192000)
     frames: int = Field(gt=0)
+    # Set by the engine when the Beat This! exports are installed and verified.
+    beat_model_dir: str | None = Field(None, min_length=1, max_length=400)
+    beat_backend: Literal["cpu", "directml"] = "cpu"
+
+
+def _analyze_uses_gpu(p: BaseModel) -> bool:
+    assert isinstance(p, AnalyzeParams)
+    return p.beat_model_dir is not None and p.beat_backend == "directml"
+
+
+def _analyze_vram(p: BaseModel) -> int:
+    # Measured peak on the RX 5700 XT: ~570 MiB dedicated (three 1500-frame attention maps).
+    return 768 * MiB if _analyze_uses_gpu(p) else 0
+
+
+def _analyze_ram(p: BaseModel) -> int:
+    assert isinstance(p, AnalyzeParams)
+    # Measured worker peak commit for 10 min: DSP 215 MiB, + model on CPU 1.06 GiB (the
+    # 1500-frame attention arena), + DirectML 1.64 GiB (CPU reference session for the
+    # parity check alongside the DirectML session). Flat with duration.
+    if p.beat_model_dir is None:
+        return 600 * MiB
+    return (1900 if p.beat_backend == "directml" else 1300) * MiB
 
 
 def _zero(_: BaseModel) -> int:
@@ -167,8 +190,9 @@ KINDS: dict[str, JobKind] = {
     ),
     "analyze_audio": JobKind(
         AnalyzeParams,
-        lambda _: False,  # DSP analyzers are CPU-only; no GPU is claimed
-        est_ram_bytes=lambda _: 600 * MiB,
+        _analyze_uses_gpu,  # only the beat model may use DirectML; DSP is CPU-only
+        est_vram_bytes=_analyze_vram,
+        est_ram_bytes=_analyze_ram,
         public=False,
         timeout_s=lambda _: 4 * 3600.0,
     ),

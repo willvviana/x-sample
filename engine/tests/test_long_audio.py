@@ -303,3 +303,56 @@ def test_record_timeout_scales_with_requested_length() -> None:
 
 def test_numpy_float32_pipeline_dtype() -> None:
     assert np.zeros((2, 4), dtype=np.float32).dtype == np.float32
+
+
+@pytest.mark.parametrize("backend", ["cpu", pytest.param("directml", marks=pytest.mark.gpu)])
+def test_ten_minute_analysis_with_beat_model_memory_is_bounded(
+    client: TestClient, auth: dict[str, str], tmp_path: Path, settings: Any, backend: str
+) -> None:
+    import shutil
+
+    from xsample.analysis import beat_model
+    from xsample.config import default_data_dir
+
+    real = default_data_dir() / "models"
+    if not beat_model.installed(real):
+        pytest.skip("Beat This! exports are not installed")
+    for name, path in beat_model.model_files(real).items():
+        target = beat_model.model_files(settings.models_dir)[name]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+    if backend == "directml":
+        detect = client.post("/api/backends/detect", headers=auth).json()["id"]
+        assert wait_for_job(client, detect, auth)["state"] == "succeeded"
+    _project(client, auth, f"LongModel {backend}")
+    measured: dict[str, Any] = {}
+    for seconds in (60, 600):
+        job, _ = _import(client, auth, _musical_wav(tmp_path / f"groove_{seconds}.wav", seconds))
+        assert job["state"] == "succeeded", job
+        view = client.get("/api/project", headers=auth).json()
+        source = next(s for s in view["sources"] if s["original_name"] == f"groove_{seconds}.wav")
+        ajob, wall = _analyse(client, auth, source["id"])
+        assert ajob["state"] == "succeeded", ajob
+        assert ajob["uses_gpu"] is (backend == "directml")
+        result = client.get(f"/api/project/sources/{source['id']}/analysis", headers=auth).json()
+        tracker = result["result"]["beat_tracker"]
+        assert tracker["method"] == "model" and tracker["backend"] == backend, tracker
+        rhythm = result["result"]["rhythm"]
+        expected_beats = seconds * 96 / 60
+        measured[seconds] = {
+            "wall_s": round(wall, 2),
+            "worker_peak_mib": round(ajob["peak_worker_memory_bytes"] / MiB, 1),
+            "analysis_timings": ajob["result"]["timings"],
+            "bpm": rhythm["bpm"],
+            "beats": len(rhythm["beats"]),
+            "expected_beats": expected_beats,
+        }
+    growth = measured[600]["worker_peak_mib"] - measured[60]["worker_peak_mib"]
+    # The log-mel spectrogram is ~15 MiB per 10 min; model sessions are a fixed cost.
+    assert growth < 200, measured
+    # Must stay within the job's RAM estimate (jobs/kinds.py).
+    assert measured[600]["worker_peak_mib"] < (1900 if backend == "directml" else 1300), measured
+    _report(
+        f"analysis_10min_beat_model_{backend}",
+        {"growth_mib": round(growth, 1), **{f"{k}s": v for k, v in measured.items()}},
+    )

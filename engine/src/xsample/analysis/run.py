@@ -1,7 +1,9 @@
-"""Runs the DSP analyzers over one source's working copy and builds the versioned sidecar.
+"""Runs the analyzers over one source's working copy and builds the versioned sidecar.
 
 Runs inside a worker process. Audio is decoded and resampled by FFmpeg in bounded chunks, so
-memory does not grow with the raw audio length (features are kept at frame rate only).
+memory does not grow with the raw audio length (features are kept at frame rate only). When
+the Beat This! model is installed, beats and downbeats come from it (beat_model.py) and the
+DSP tracker remains the fallback.
 """
 
 from __future__ import annotations
@@ -16,14 +18,16 @@ from typing import Any
 
 import numpy as np
 
+from xsample.analysis import beat_model
 from xsample.analysis.dsp import ANALYSIS_RATE, FeatureExtractor, Features
 from xsample.analysis.harmony import PITCH_CLASSES, HarmonyResult, analyze_harmony
-from xsample.analysis.rhythm import RhythmResult, analyze_rhythm
+from xsample.analysis.rhythm import RhythmResult, analyze_rhythm, apply_tracked_beats
 from xsample.analysis.schema import (
     ANALYZER_VERSION,
     SCHEMA_VERSION,
     AnalysisResult,
     BassNoteOut,
+    BeatTrackerOut,
     BoundariesOut,
     BoundaryEdge,
     ChordOut,
@@ -55,10 +59,16 @@ class AnalysisCancelledError(Exception):
     pass
 
 
-def cache_key(media_sha256: str) -> str:
-    blob = json.dumps(
-        [media_sha256, ANALYZER_VERSION, SCHEMA_VERSION, PARAMS], sort_keys=True
-    ).encode()
+def cache_key(media_sha256: str, beat_model_id: str | None = None) -> str:
+    """Key of the sidecar for this audio, analyzer version and beat model.
+
+    The beat model identity is part of the key (installing or removing it makes older
+    results stale). The backend is not: DirectML results are parity-checked against CPU.
+    """
+    material: list[Any] = [media_sha256, ANALYZER_VERSION, SCHEMA_VERSION, PARAMS]
+    if beat_model_id is not None:
+        material.append({"beat_model": beat_model_id})
+    blob = json.dumps(material, sort_keys=True).encode()
     return hashlib.sha256(blob).hexdigest()[:20]
 
 
@@ -67,17 +77,26 @@ def extract_features(
     total_frames: int,
     progress: Callable[[float, str], None],
     cancelled: Callable[[], bool],
-) -> Features:
+    mel: beat_model.LogMelStream | None = None,
+    share: float = 0.7,
+) -> tuple[Features, beat_model.F32 | None]:
+    """DSP features and, when `mel` is given, the beat model's log-mel spectrogram."""
     fx = FeatureExtractor()
+    spect: list[beat_model.F32] = []
     done = 0
     for chunk in chunks:
         if cancelled():
             raise AnalysisCancelledError
-        mono = chunk[:, 0] if chunk.ndim == 2 else chunk
-        fx.push(np.ascontiguousarray(mono, dtype=np.float32))
+        mono = np.ascontiguousarray(chunk[:, 0] if chunk.ndim == 2 else chunk, dtype=np.float32)
+        fx.push(mono)
+        if mel is not None:
+            spect.append(mel.push(mono))
         done += len(mono)
-        progress(min(0.7, 0.7 * done / max(total_frames, 1)), "Reading audio")
-    return fx.finish()
+        progress(min(share, share * done / max(total_frames, 1)), "Reading audio")
+    if mel is None:
+        return fx.finish(), None
+    spect.append(mel.finish())
+    return fx.finish(), np.concatenate(spect)
 
 
 def _key_out(tonic: int, mode: str, score: float) -> KeyOut:
@@ -95,7 +114,11 @@ def build_result(
     sample_rate: int,
     frames: int,
     timings: Timings,
+    beat_tracker: BeatTrackerOut | None = None,
+    sidecar_key: str | None = None,
 ) -> AnalysisResult:
+    tracker = beat_tracker or BeatTrackerOut(method="dsp")
+
     def pos(t: float) -> int:
         return int(min(max(round(t * sample_rate), 0), frames))
 
@@ -198,9 +221,9 @@ def build_result(
     )
     return AnalysisResult(
         schema_version=SCHEMA_VERSION,
-        backend="cpu",
+        backend=tracker.backend,
         source_id=source_id,
-        cache_key=cache_key(media_sha256),
+        cache_key=sidecar_key or cache_key(media_sha256),
         media_sha256=media_sha256,
         sample_rate=sample_rate,
         analysis_rate=ANALYSIS_RATE,
@@ -208,6 +231,7 @@ def build_result(
         params=PARAMS,
         created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         timings=timings,
+        beat_tracker=tracker,
         rhythm=rhythm_out,
         harmony=harmony_out,
         structure=structure_out,
@@ -290,7 +314,14 @@ def analyze_file(
     progress: Callable[[float, str], None],
     cancelled: Callable[[], bool],
     decode: Callable[..., Any] | None = None,
+    beat_model_dir: Path | None = None,
+    beat_backend: str = "cpu",
 ) -> AnalysisResult:
+    """Analyse one file. With `beat_model_dir`, beats come from the installed model.
+
+    The sidecar key reflects the request (model installed or not); `beat_tracker` in the
+    result says what actually ran, including a DSP fallback if the model failed to load.
+    """
     total_analysis_frames = int(frames * ANALYSIS_RATE / sample_rate)
     t0 = time.perf_counter()
     if decode is None:
@@ -304,10 +335,30 @@ def analyze_file(
         chunk_frames=CHUNK_FRAMES,
         cancelled=cancelled,
     )
-    features = extract_features(chunks, total_analysis_frames, progress, cancelled)
+    use_model = beat_model_dir is not None
+    features, spect = extract_features(
+        chunks,
+        total_analysis_frames,
+        progress,
+        cancelled,
+        mel=beat_model.LogMelStream() if use_model else None,
+        share=0.6 if use_model else 0.7,
+    )
     t1 = time.perf_counter()
+    tracker_out = BeatTrackerOut(method="dsp")
+    tracked: tuple[Any, Any] | None = None
+    if beat_model_dir is not None and spect is not None:
+        progress(0.6, "Beats and downbeats (model)")
+        tracked, tracker_out = _track_beats(
+            beat_model_dir, beat_backend, spect, progress, cancelled
+        )
+    t_model = time.perf_counter()
     progress(0.75, "Tempo and beats")
     rhythm = analyze_rhythm(features)
+    if tracked is not None:
+        rhythm = apply_tracked_beats(
+            rhythm, features, tracked[0], tracked[1], beat_model.DISPLAY_NAME
+        )
     if cancelled():
         raise AnalysisCancelledError
     t2 = time.perf_counter()
@@ -321,7 +372,8 @@ def analyze_file(
     t4 = time.perf_counter()
     timings = Timings(
         decode_features_s=round(t1 - t0, 3),
-        rhythm_s=round(t2 - t1, 3),
+        beat_model_s=round(t_model - t1, 3),
+        rhythm_s=round(t2 - t_model, 3),
         harmony_s=round(t3 - t2, 3),
         structure_s=round(t4 - t3, 3),
         total_s=round(t4 - t0, 3),
@@ -336,7 +388,46 @@ def analyze_file(
         sample_rate=sample_rate,
         frames=frames,
         timings=timings,
+        beat_tracker=tracker_out,
+        sidecar_key=cache_key(media_sha256, beat_model.identity() if use_model else None),
     )
+
+
+def _track_beats(
+    models_dir: Path,
+    backend: str,
+    spect: beat_model.F32,
+    progress: Callable[[float, str], None],
+    cancelled: Callable[[], bool],
+) -> tuple[tuple[Any, Any] | None, BeatTrackerOut]:
+    try:
+        tracker = beat_model.BeatTracker(models_dir, backend)
+    except Exception as exc:
+        # A broken install must not block analysis: report it and use the DSP tracker.
+        note = f"The beat model could not be loaded ({type(exc).__name__}: {exc}); DSP was used."
+        return None, BeatTrackerOut(method="dsp", notes=[note])
+    try:
+        beats, downs, report = tracker.track(
+            spect,
+            progress=lambda f: progress(0.6 + 0.15 * f, "Beats and downbeats (model)"),
+            cancelled=cancelled,
+        )
+    except beat_model.BeatTrackingCancelledError as exc:
+        raise AnalysisCancelledError from exc
+    finally:
+        tracker.close()
+    out = BeatTrackerOut(
+        method="model",
+        model_id=beat_model.MODEL_ID,
+        model_name=beat_model.DISPLAY_NAME,
+        model_sha256=[
+            beat_model.PINNED[f][0] for f in (beat_model.FULL_FILE, beat_model.SHORT_FILE)
+        ],
+        license=beat_model.LICENSE,
+        backend=report.backend,  # type: ignore[arg-type]
+        notes=report.notes,
+    )
+    return (beats, downs), out
 
 
 def write_sidecar(path: Path, result: AnalysisResult) -> None:

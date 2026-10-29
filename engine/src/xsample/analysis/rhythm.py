@@ -1,5 +1,7 @@
 """Tempo, beats, downbeats, meter, subdivision, swing, syncopation and onsets (DSP).
 
+Beats and downbeats can instead come from a beat-tracking model (apply_tracked_beats); tempo,
+meter and the beat-relative descriptors are then derived from the model's beats.
 Times are returned in seconds; the orchestrator converts them to integer project samples.
 """
 
@@ -107,6 +109,14 @@ def estimate_tempo(odf: F64, fps: float) -> tuple[float, float, list[TempoCandid
         return 0.0, 0.0, []
     best = int(np.argmax(weighted))
     bpm = 60.0 * fps / _refine(weighted, best)
+    candidates, confidence = tempo_candidates(weighted, fps, bpm, float(weighted[best]))
+    return bpm, confidence, candidates
+
+
+def tempo_candidates(
+    weighted: F64, fps: float, bpm: float, top: float
+) -> tuple[list[TempoCandidate], float]:
+    """Related tempi scored by the onset autocorrelation relative to `top` (the primary)."""
 
     def score_at(target: float) -> float:
         lag = 60.0 * fps / target
@@ -116,7 +126,7 @@ def estimate_tempo(odf: F64, fps: float) -> tuple[float, float, list[TempoCandid
         window = window[np.isfinite(window)]
         return float(window.max()) if len(window) else 0.0
 
-    top = float(weighted[best])
+    top = max(top, 1e-12)
     candidates = [TempoCandidate(round(bpm, 2), "primary", 1.0)]
     for factor, rel in ((0.5, "half"), (2.0, "double"), (2.0 / 3.0, "other"), (1.5, "other")):
         target = bpm * factor
@@ -126,7 +136,7 @@ def estimate_tempo(odf: F64, fps: float) -> tuple[float, float, list[TempoCandid
             )
     rivals = [c.score for c in candidates[1:]]
     confidence = float(np.clip(1.0 - (max(rivals) if rivals else 0.0), 0.0, 1.0))
-    return bpm, confidence, candidates
+    return candidates, confidence
 
 
 def local_tempo(odf: F64, fps: float, global_bpm: float) -> list[tuple[float, float]]:
@@ -356,6 +366,106 @@ def complete_edges(beats: F64, rms: F64, fps: float, duration: float, tol: float
     return out
 
 
+def tempo_changes(curve: list[tuple[float, float]]) -> tuple[bool, list[tuple[float, float]]]:
+    bpms = np.array([b for _, b in curve])
+    variable = bool(len(bpms) > 2 and np.std(bpms) / max(np.mean(bpms), 1e-9) > 0.02)
+    changes: list[tuple[float, float]] = []
+    if variable:
+        ref = bpms[0]
+        for t, b in curve:
+            if abs(b - ref) / ref > 0.04:
+                changes.append((t, b))
+                ref = b
+    return variable, changes
+
+
+def beat_tempo_curve(beats: F64) -> list[tuple[float, float]]:
+    """Windowed tempo from beat intervals, on the same window grid as local_tempo."""
+    ibi = np.diff(beats)
+    if len(ibi) == 0:
+        return []
+    mid = (beats[:-1] + beats[1:]) / 2
+    end = float(beats[-1])
+    if end - float(beats[0]) < LOCAL_WINDOW_S:
+        return [(float(np.median(mid)), 60.0 / float(np.median(ibi)))]
+    curve = []
+    t = float(beats[0])
+    while t + LOCAL_WINDOW_S <= end + 1e-9:
+        sel = ibi[(mid >= t) & (mid < t + LOCAL_WINDOW_S)]
+        if len(sel):
+            curve.append((t + LOCAL_WINDOW_S / 2, 60.0 / float(np.median(sel))))
+        t += LOCAL_HOP_S
+    return curve
+
+
+def meter_from_downbeats(beats: F64, downbeats: F64) -> tuple[int | None, float]:
+    """Most common number of beats per bar, and the share of bars that have it."""
+    if len(downbeats) < 3:
+        return None, 0.0
+    idx = np.searchsorted(beats, downbeats)
+    counts = np.diff(idx)
+    counts = counts[counts > 0]
+    if len(counts) == 0:
+        return None, 0.0
+    values, freq = np.unique(counts, return_counts=True)
+    best = int(np.argmax(freq))
+    return int(values[best]), float(freq[best] / len(counts))
+
+
+def apply_tracked_beats(
+    dsp: RhythmResult, features: Features, beats: F64, downbeats: F64, source: str
+) -> RhythmResult:
+    """Replace the DSP beat grid with beats and downbeats from a tracker (e.g. a model).
+
+    Onsets stay DSP; tempo, tempo curve, meter, subdivision, swing, syncopation and
+    microtiming are recomputed from the tracked beats. The tracker's output is not edited
+    (no phase shift or edge completion).
+    """
+    if len(beats) < 3:
+        dsp.notes.append(f"{source} found fewer than 3 beats; the DSP beat tracker was used.")
+        return dsp
+    fps = features.rhythm_fps
+    odf = features.onset.astype(np.float64)
+    bpm = 60.0 / float(np.median(np.diff(beats)))
+    weighted, _ = _tempo_scores(odf, fps, 1.0, 1000.0)
+    lag = round(60.0 * fps / bpm)
+    top = float(weighted[lag]) if 0 < lag < len(weighted) and np.isfinite(weighted[lag]) else 0.0
+    candidates, confidence = tempo_candidates(weighted, fps, bpm, top)
+    if top <= 0:
+        candidates, confidence = candidates[:1], 0.0
+    curve = beat_tempo_curve(beats)
+    variable, changes = tempo_changes(curve)
+    idx = np.clip(np.round(beats * fps).astype(int), 0, len(odf) - 1)
+    meter, meter_conf = meter_from_downbeats(beats, downbeats)
+    sub, sub_conf, swing, swing_conf = subdivision_and_swing(odf, beats, fps)
+    onsets = np.asarray(dsp.onsets, np.float64)
+    sync, micro = syncopation_and_microtiming(onsets, np.asarray(dsp.onset_strength), beats)
+    notes = [n for n in dsp.notes if "Beat phase" not in n and "No periodic" not in n]
+    notes.append(f"Beats and downbeats from {source}; tempo and meter are derived from them.")
+    return RhythmResult(
+        bpm=bpm,
+        confidence=confidence,
+        candidates=candidates,
+        tempo_curve=curve,
+        variable_tempo=variable,
+        tempo_changes=changes,
+        beats=beats.tolist(),
+        beat_strength=odf[idx].tolist(),
+        downbeats=downbeats.tolist(),
+        meter=meter,
+        meter_confidence=meter_conf,
+        subdivision=sub,
+        subdivision_confidence=sub_conf,
+        swing_ratio=swing,
+        swing_confidence=swing_conf,
+        syncopation=sync,
+        microtiming_ms=micro,
+        onsets=dsp.onsets,
+        onset_strength=dsp.onset_strength,
+        notes=notes,
+    )
+
+
 def analyze_rhythm(features: Features) -> RhythmResult:
     fps = features.rhythm_fps
     odf = features.onset.astype(np.float64)
@@ -388,15 +498,7 @@ def analyze_rhythm(features: Features) -> RhythmResult:
             notes,
         )
     curve = local_tempo(odf, fps, bpm)
-    bpms = np.array([b for _, b in curve])
-    variable = bool(len(bpms) > 2 and np.std(bpms) / max(np.mean(bpms), 1e-9) > 0.02)
-    changes: list[tuple[float, float]] = []
-    if variable:
-        ref = bpms[0]
-        for t, b in curve:
-            if abs(b - ref) / ref > 0.04:
-                changes.append((t, b))
-                ref = b
+    variable, changes = tempo_changes(curve)
     beats = track_beats(odf, fps, curve)
     beats, shifted = fix_offbeat_phase(beats, odf_low, odf, fps)
     if shifted:

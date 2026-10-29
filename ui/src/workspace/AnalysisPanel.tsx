@@ -168,10 +168,34 @@ export function AnalysisPanel({ client, project, preferredSourceId, onGrid, onEr
       {result && effective && id && (
         <>
           <p className="small muted" data-testid="analysis-provenance">
-            Ran on <strong data-testid="analysis-backend">{result.backend.toUpperCase()}</strong>{" "}
-            (signal-processing analyzers, no AI model) · {result.analyzer_version} ·{" "}
-            {result.timings.total_s.toFixed(1)} s · {result.created_at}
+            {result.beat_tracker.method === "model" ? (
+              <>
+                Beats and downbeats:{" "}
+                <strong data-testid="analysis-beat-model">{result.beat_tracker.model_name}</strong>{" "}
+                on <strong data-testid="analysis-backend">{result.backend.toUpperCase()}</strong> (
+                {result.timings.beat_model_s.toFixed(1)} s); everything else: signal processing on
+                CPU
+              </>
+            ) : (
+              <>
+                Ran on{" "}
+                <strong data-testid="analysis-backend">{result.backend.toUpperCase()}</strong>{" "}
+                (signal-processing analyzers, no AI model)
+              </>
+            )}{" "}
+            · {result.analyzer_version} · {result.timings.total_s.toFixed(1)} s ·{" "}
+            {result.created_at}
           </p>
+          {result.beat_tracker.method === "model" && result.beat_tracker.license && (
+            <p className="small muted" data-testid="analysis-beat-model-license">
+              Model license: {result.beat_tracker.license}
+            </p>
+          )}
+          {(result.beat_tracker.notes ?? []).map((note) => (
+            <p key={note} className="small muted" data-testid="analysis-beat-model-note">
+              {note}
+            </p>
+          ))}
           <Summary view={view} onCorrect={correct} />
           <p className="small muted">
             Scores rank the alternatives found by the analyzer; they are not calibrated

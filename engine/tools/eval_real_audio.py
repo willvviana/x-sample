@@ -4,7 +4,12 @@ Datasets live outside the repository in %LOCALAPPDATA%\\X-Sample\\eval-datasets 
 per-file SHA-256 manifests; see docs/EVALUATION.md). Results go to
 test-reports/real_audio_eval.json and are kept separate from the synthetic benchmark.
 
-    uv run python tools/eval_real_audio.py [--limit N]
+    uv run python tools/eval_real_audio.py [--limit N] [--beat-model [--backend B]]
+
+With --beat-model, beats and downbeats from the installed Beat This! small exports (pinned
+SHA-256, run through the engine's BeatTracker) are scored next to the DSP tracker as nn_*
+fields. Beat This! was trained on GuitarSet, so its GuitarSet scores are not a held-out
+measurement; MusicNet and Slakh were not in its training data.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from tests.analysis_fixtures import (  # noqa: E402
     mirex_key_score,
 )
 
+from xsample.analysis import beat_model  # noqa: E402
 from xsample.analysis.dsp import ANALYSIS_RATE, FeatureExtractor  # noqa: E402
 from xsample.analysis.harmony import analyze_harmony  # noqa: E402
 from xsample.analysis.rhythm import analyze_rhythm  # noqa: E402
@@ -41,6 +47,10 @@ DATA = Path(os.environ["LOCALAPPDATA"]) / "X-Sample" / "eval-datasets"
 REPORT = ENGINE / "test-reports" / "real_audio_eval.json"
 PC = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 MELODY_MIN_MIDI = 48  # the DSP melody tracker searches from C3 upwards
+BEAT_MODEL: Any = None  # beat_model.BeatTracker when --beat-model is given
+# Whether the model's training data contains the dataset (beat_this_annotations repository).
+TRAINING_OVERLAP = {"GuitarSet": True, "MusicNet": False, "BabySlakh": False}
+NEURAL: dict[str, Any] = {}  # beats/downbeats/timing of the last analysed file
 
 
 def pitch_class(name: str) -> int:
@@ -79,12 +89,57 @@ def harte(label: str) -> tuple[int, str] | None:
 def analyse(path: Path) -> tuple[Any, Any, float, float]:
     t0 = time.perf_counter()
     fx = FeatureExtractor()
+    mel = beat_model.LogMelStream()
+    spect = []
     for chunk in decode_f32(path, out_channels=1, sample_rate=ANALYSIS_RATE):
-        fx.push(np.ascontiguousarray(chunk[:, 0]))
+        mono = np.ascontiguousarray(chunk[:, 0])
+        fx.push(mono)
+        if BEAT_MODEL is not None:
+            spect.append(mel.push(mono))
     features = fx.finish()
     rhythm = analyze_rhythm(features)
     harmony = analyze_harmony(features, rhythm.beats, rhythm.downbeats, rhythm.onsets)
-    return rhythm, harmony, time.perf_counter() - t0, features.duration_samples / ANALYSIS_RATE
+    secs = time.perf_counter() - t0
+    NEURAL.clear()
+    if BEAT_MODEL is not None:
+        t1 = time.perf_counter()
+        spect.append(mel.finish())
+        beats, downs, report = BEAT_MODEL.track(np.concatenate(spect))
+        NEURAL.update(
+            beats=beats, downs=downs, secs=time.perf_counter() - t1, backend=report.backend
+        )
+    return rhythm, harmony, secs, features.duration_samples / ANALYSIS_RATE
+
+
+def any_level_f(est: Any, ref: Any) -> float:
+    """Best beat F over the reference at half, same and double metrical level.
+
+    Reference beat levels follow the notation (MusicNet scores in eighths or halves), so a
+    tracker at a neighbouring, equally valid level scores ~0 on plain F. Secondary metric.
+    """
+    ref = np.asarray(ref, np.float64)
+    levels = [ref, ref[0::2], ref[1::2]]
+    if len(ref) > 1:
+        levels.append(np.sort(np.concatenate([ref, (ref[:-1] + ref[1:]) / 2])))
+    return max(f_measure(list(est), list(lv)) for lv in levels)
+
+
+def neural_fields(ref_beats: Any, ref_downs: Any, ref_bpm: float) -> dict[str, Any]:
+    if not NEURAL:
+        return {}
+    beats, downs = NEURAL["beats"], NEURAL["downs"]
+    bpm = 60.0 / float(np.median(np.diff(beats))) if len(beats) > 2 else 0.0
+    out: dict[str, Any] = {
+        "nn_bpm_est": round(bpm, 1),
+        **{f"nn_{k}": v for k, v in tempo_scores(bpm, ref_bpm).items()},
+        "nn_beat_f": round(f_measure(list(beats), list(ref_beats)), 3),
+        "nn_beat_f_any": round(any_level_f(beats, ref_beats), 3),
+    }
+    if ref_downs is not None:
+        out["nn_downbeat_f"] = round(f_measure(list(downs), list(ref_downs)), 3)
+    out["nn_s"] = round(NEURAL["secs"], 2)
+    out["nn_backend"] = NEURAL["backend"]
+    return out
 
 
 def tempo_scores(est: float, ref: float) -> dict[str, bool]:
@@ -144,7 +199,9 @@ def guitarset(limit: int | None) -> list[dict[str, Any]]:
             "bpm_est": round(rhythm.bpm, 1),
             **tempo_scores(rhythm.bpm, ref_bpm),
             "beat_f": round(f_measure(rhythm.beats, beats), 3),
+            "beat_f_any": round(any_level_f(rhythm.beats, beats), 3),
             "downbeat_f": round(f_measure(rhythm.downbeats, downs), 3),
+            **neural_fields(beats, downs, ref_bpm),
             "key_ref": f"{tonic} {mode}",
             "key_est": key.label,
             "key_mirex": mirex_key_score((key.tonic, key.mode), ref_key),
@@ -204,6 +261,8 @@ def musicnet(limit: int | None) -> list[dict[str, Any]]:
             "bpm_est": round(rhythm.bpm, 1),
             **tempo_scores(rhythm.bpm, ref_bpm),
             "beat_f": round(f_measure(rhythm.beats, ref_beats), 3),
+            "beat_f_any": round(any_level_f(rhythm.beats, ref_beats), 3),
+            **neural_fields(ref_beats, None, ref_bpm),
             "key_est": key.label,
             "analysis_s": round(secs, 2),
         }
@@ -315,9 +374,11 @@ def babyslakh(limit: int | None) -> list[dict[str, Any]]:
             "bpm_est": round(rhythm.bpm, 1),
             **tempo_scores(rhythm.bpm, ref_bpm),
             "beat_f": round(f_measure(rhythm.beats, beats), 3),
+            "beat_f_any": round(any_level_f(rhythm.beats, beats), 3),
             "downbeat_f": round(f_measure(rhythm.downbeats, [d for d in downs if d < dur]), 3)
             if downs
             else None,
+            **neural_fields(beats, [d for d in downs if d < dur] if downs else None, ref_bpm),
             "instruments_ref": instruments,
             "instrument_recognition": "not evaluated: needs a model (not yet approved)",
             "analysis_s": round(secs, 2),
@@ -344,7 +405,13 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "acc1",
         "acc2",
         "beat_f",
+        "beat_f_any",
         "downbeat_f",
+        "nn_acc1",
+        "nn_acc2",
+        "nn_beat_f",
+        "nn_beat_f_any",
+        "nn_downbeat_f",
         "key_mirex",
         "chord_majmin",
         "chord_full",
@@ -362,11 +429,27 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--beat-model", action="store_true")
+    ap.add_argument("--backend", default="directml", choices=("cpu", "directml"))
     args = ap.parse_args()
+    if args.beat_model:
+        from xsample.config import default_data_dir
+
+        BEAT_MODEL = beat_model.BeatTracker(default_data_dir() / "models", args.backend)
     rows = guitarset(args.limit) + musicnet(args.limit) + babyslakh(args.limit)
     report = {
         "kind": "real audio (licensed subsets); not comparable with the synthetic benchmark",
         "analyzer": "xsample.analysis.dsp (CPU)",
+        "beat_model": None
+        if not args.beat_model
+        else {
+            "model": f"{beat_model.DISPLAY_NAME} (MIT), ONNX, minimal postprocessing",
+            "sha256": [
+                beat_model.PINNED[f][0] for f in (beat_model.FULL_FILE, beat_model.SHORT_FILE)
+            ],
+            "requested_backend": args.backend,
+            "training_overlap": TRAINING_OVERLAP,
+        },
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "summary": summarise(rows),
         "items": rows,

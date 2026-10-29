@@ -11,7 +11,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION = 1
+# 2: beat_tracker, backend may be directml, timings.beat_model_s.
+SCHEMA_VERSION = 2
 # Bump whenever an analyzer change can alter results; it invalidates every cached sidecar.
 ANALYZER_VERSION = "dsp-0.2.0"
 ANALYZER_ID = "xsample.analysis.dsp"
@@ -164,8 +165,21 @@ class BoundariesOut(_M):
     end: BoundaryEdge
 
 
+class BeatTrackerOut(_M):
+    """Which beat/downbeat tracker produced rhythm.beats and rhythm.downbeats, and where."""
+
+    method: Literal["dsp", "model"]
+    model_id: str | None = None
+    model_name: str | None = None
+    model_sha256: list[str] = Field(default_factory=list)
+    license: str | None = None
+    backend: Literal["cpu", "directml"] = "cpu"
+    notes: list[str] = Field(default_factory=list)
+
+
 class Timings(_M):
     decode_features_s: float
+    beat_model_s: float = 0.0
     rhythm_s: float
     harmony_s: float
     structure_s: float
@@ -176,8 +190,10 @@ class AnalysisResult(_M):
     schema_version: int = SCHEMA_VERSION
     analyzer_id: str = ANALYZER_ID
     analyzer_version: str = ANALYZER_VERSION
-    backend: Literal["cpu"] = Field(
-        "cpu", description="where the analysis actually ran (DSP analyzers are CPU-only)"
+    backend: Literal["cpu", "directml"] = Field(
+        "cpu",
+        description="where model inference ran; DSP analyzers are CPU-only, and directml is "
+        "reported only after strict, profiled placement and a CPU parity check",
     )
     source_id: str
     cache_key: str
@@ -188,6 +204,7 @@ class AnalysisResult(_M):
     params: dict[str, float | int | str]
     created_at: str
     timings: Timings
+    beat_tracker: BeatTrackerOut
     rhythm: RhythmOut
     harmony: HarmonyOut
     structure: StructureOut

@@ -647,7 +647,7 @@ export interface components {
     AnalysisResult: {
       /**
        * Schema Version
-       * @default 1
+       * @default 2
        */
       schema_version: number;
       /**
@@ -662,11 +662,11 @@ export interface components {
       analyzer_version: string;
       /**
        * Backend
-       * @description where the analysis actually ran (DSP analyzers are CPU-only)
+       * @description where model inference ran; DSP analyzers are CPU-only, and directml is reported only after strict, profiled placement and a CPU parity check
        * @default cpu
-       * @constant
+       * @enum {string}
        */
-      backend: "cpu";
+      backend: "cpu" | "directml";
       /** Source Id */
       source_id: string;
       /** Cache Key */
@@ -686,6 +686,7 @@ export interface components {
       /** Created At */
       created_at: string;
       timings: components["schemas"]["Timings"];
+      beat_tracker: components["schemas"]["BeatTrackerOut"];
       rhythm: components["schemas"]["RhythmOut"];
       harmony: components["schemas"]["HarmonyOut"];
       structure: components["schemas"]["StructureOut"];
@@ -831,6 +832,33 @@ export interface components {
        * @default 0
        */
       downbeat_shift: number;
+    };
+    /**
+     * BeatTrackerOut
+     * @description Which beat/downbeat tracker produced rhythm.beats and rhythm.downbeats, and where.
+     */
+    BeatTrackerOut: {
+      /**
+       * Method
+       * @enum {string}
+       */
+      method: "dsp" | "model";
+      /** Model Id */
+      model_id?: string | null;
+      /** Model Name */
+      model_name?: string | null;
+      /** Model Sha256 */
+      model_sha256?: string[];
+      /** License */
+      license?: string | null;
+      /**
+       * Backend
+       * @default cpu
+       * @enum {string}
+       */
+      backend: "cpu" | "directml";
+      /** Notes */
+      notes?: string[];
     };
     /** BoundariesOut */
     BoundariesOut: {
@@ -1695,6 +1723,11 @@ export interface components {
     Timings: {
       /** Decode Features S */
       decode_features_s: number;
+      /**
+       * Beat Model S
+       * @default 0
+       */
+      beat_model_s: number;
       /** Rhythm S */
       rhythm_s: number;
       /** Harmony S */

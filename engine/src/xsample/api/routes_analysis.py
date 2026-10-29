@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from xsample.analysis import beat_model
 from xsample.analysis.effective import EffectiveAnalysis, effective
 from xsample.analysis.run import cache_key
 from xsample.analysis.schema import ANALYZER_VERSION, AnalysisResult
@@ -111,9 +112,31 @@ def build_analysis_router(state: EngineState) -> APIRouter:
                 return job
         return None
 
+    def beat_model_params(frames: int, sample_rate: int) -> dict[str, Any]:
+        """Model directory and backend for analyze_audio, if the exports are installed.
+
+        `installed` hashes the files once per size/mtime, so polling stays cheap. DirectML is
+        only requested when detection found it and the clip is longer than one model chunk
+        (shorter clips run the dynamic export on CPU); the worker still verifies placement
+        and parity before it reports DirectML.
+        """
+        models_dir = state.settings.models_dir
+        if not beat_model.installed(models_dir):
+            return {}
+        detected = (state.detection_snapshot().get("result") or {}).get("backends", {})
+        model_frames = int(frames / sample_rate * beat_model.FPS) + 1
+        gpu = detected.get("directml", {}).get("state") == "available" and not beat_model.is_short(
+            model_frames
+        )
+        return {"beat_model_dir": str(models_dir), "beat_backend": "directml" if gpu else "cpu"}
+
+    def expected_key(media_sha256: str) -> str:
+        installed = beat_model.installed(state.settings.models_dir)
+        return cache_key(media_sha256, beat_model.identity() if installed else None)
+
     def view(source_id: str) -> AnalysisView:
         root, params, corrections = locate(source_id)
-        key = cache_key(params["media_sha256"])
+        key = expected_key(params["media_sha256"])
         folder = layout.resolve_inside(root, f"{layout.ANALYSIS_RESULTS}/{source_id}")
         result = sidecars.get(folder / f"{key}.json")
         job = latest_job(root, source_id)
@@ -158,7 +181,8 @@ def build_analysis_router(state: EngineState) -> APIRouter:
         if current.status == "ready" and not req.force:
             return current
         _, params, _ = locate(source_id)
-        state.jobs.submit("analyze_audio", params)
+        model = beat_model_params(int(params["frames"]), int(params["sample_rate"]))
+        state.jobs.submit("analyze_audio", {**params, **model})
         return view(source_id)
 
     @api.put(
