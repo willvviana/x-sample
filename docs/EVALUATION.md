@@ -15,6 +15,7 @@ license, attribution and the SHA-256 of every kept file. Only small subsets were
 | GuitarSet 1.1.0 | Zenodo 10.5281/zenodo.3371780, CC BY 4.0 (Xi et al., ISMIR 2018) | `annotation.zip` in full (39.1 MB, MD5 verified); 48 mono-mic takes (players 00 and 03, Funk and Jazz, comp and solo) pulled from `audio_mono-mic.zip` by HTTP range requests (77.7 MB, per-member CRC-32 verified) | beats/downbeats, tempo, key, performed chords, notes |
 | BabySlakh (16 kHz) | Zenodo 10.5281/zenodo.4603870, CC BY 4.0 (Manilow et al., WASPAA 2019) | Complete archive streamed (882,818,115 bytes, MD5 from Zenodo verified): all 20 tracks; mix, `all_src.mid`, per-stem MIDI and metadata kept (152 MB), audio stems dropped | tempo map and meter from MIDI; instruments from stem programs and MIDI notes (tagging) |
 | MusicNet 1.0 | Zenodo 10.5281/zenodo.5120004, CC BY 4.0 (Thickstun et al., ICLR 2017) | First 400 MB of the 11.1 GB archive streamed and stopped; kept 10 recordings of the solo piano / violin ensembles with their labels: 8 solo piano, 1 solo violin, 1 violin + piano | note labels (beat positions, violin notes); movement key for 7 recordings |
+| Schubert Winterreise 2.1 | Zenodo 10.5281/zenodo.10839767; dataset and annotations CC BY 3.0 (Weiß et al., ACM JOCCH 2020); HU33 audio Public Domain Mark (`license_HU33.txt`) | Fetched 2026-10-29 with approval by HTTP range requests from the 517 MB zip (CRC-32 verified, 175 MB kept): README, license files, global keys, and for the **HU33** performance only (Hüsch/Müller 1933, mono 22.05 kHz) the 24 songs' audio, chords, measures, local keys (annotator 1) and score-aligned notes. **SC06 not fetched**: the README calls it CC BY 3.0 but `license_SC06.txt` points to CC BY-NC-ND 3.0 (non-commercial) | global key, chords, measures (downbeats), voice/piano notes (singing and piano truth) |
 | Medley-solos-DB 1.2 | Zenodo 10.5281/zenodo.3464194, CC BY 4.0 | **Not fetched.** One 7.9 GB `.tar.gz`; the piano, tenor sax and violin test clips start 2.2–3.4 GB into the stream, so no small selective download exists. Needs approval. | — |
 | MAESTRO, FMA medium | — | Not fetched (by decision) | — |
 
@@ -392,3 +393,81 @@ voicings: even the per-beat best template is Gmaj7 for a B7(#9) comp. Reaching t
 key targets needs a learned chord model or a front end that suppresses partials and fixed
 resonances (NNLS-style), and labelled audio closer to the product's material (sung, produced
 music). Candidates and their licenses: `docs/MODELS.md`, "Accuracy candidates".
+
+## Schubert Winterreise (HU33) and the CREMA chord experiment, 2026-10-29
+
+### Production analyzer (`dsp-0.2.1`, Beat This! grid on DirectML) and tagger on Winterreise
+
+24 songs, baritone and piano, recorded 1933, mono 22.05 kHz. Independent of every model in
+use (not in Beat This!'s, AudioSet's or CREMA's training data, as far as published). No beat
+annotation exists, so only downbeats are scored for rhythm.
+
+| Key (MIREX) | Chord maj/min | Chord full | Downbeat F (DSP → Beat This!) |
+|---|---|---|---|
+| **0.87** (20 of 24 exact; misses are relative/neighbouring keys, e.g. A minor → C major) | **0.67** | 0.51 | 0.18 → 0.58 |
+
+Tagger (`uv run python tools/eval_tagger.py`, thresholds and rules unchanged):
+
+| Label | Piece level @0.5 / @0.2 | 10 s windows @0.5 / @0.2 | Window AUC |
+|---|---|---|---|
+| **Singing** (24 songs; 695 windows with voice, 115 piano-only) | recall 0.04 / **1.00** | recall 0.001 / 0.67, false positives 0 / 0.9 % | 0.99 |
+| Piano | recall 0.08 / 0.83 | recall 0.004 / 0.12 | 1.00 (2 negatives) |
+| Classical | recall 0.00 / 0.04 | — | — |
+| Speech (none present) | false positives 4 % / **46 %** of songs | 0.1 % / 2.7 % of windows | — |
+
+Reading: the tagger ranks singing almost perfectly (AUC 0.99) but its scores on this old,
+band-limited recording stay around 0.35, so singing is shown as *uncertain* on every song and
+*detected* on one. Speech is shown as uncertain on almost half of the songs — a false positive
+the user may need to reject. One performance by one singer is too narrow to call singing
+"validated"; it is now measured. With these 24 pieces Singing meets the pre-set "evaluated"
+rule (≥ 5 pieces each way, pooled); `tagger.EVALUATED` was **not** changed (it changes the
+tagger identity and the UI's wording; proposed for approval).
+
+### CREMA chord model (bmcfee/crema, BSD-2-Clause) — experiment, not integrated
+
+- **Source and license:** `training/chords/resources/{model.h5, model_spec.pkl, pump.pkl}` at
+  commit `d46b867` (2019), verified by Git blob hash; the repository license (BSD-2-Clause,
+  © 2017 Brian McFee) covers the committed weights; no separate weights license exists.
+  Training data: Isophonics, Billboard, RWC-Pop, uspop2002 (McFee & Bello, ISMIR 2017) —
+  disjoint from GuitarSet, Winterreise and our synthetic set.
+- **TensorFlow could not be used:** Windows Application Control blocks TensorFlow's DLL on
+  the reference machine (and numba's). The policy was not bypassed. Instead the Keras 2.2.2
+  network (BatchNorm → 5×5 conv → 1×216 conv (72) → 2 × BiGRU(128, `reset_after=False`, hard
+  sigmoid) → root/bass/pitch heads → 170-class chord tag) was re-implemented in NumPy from
+  the plain-data spec and the HDF5 weights, and an ONNX graph (opset 17, 2.1 MB) was built
+  from the same weights with `onnx.helper`. ONNX vs NumPy: max |Δ| 4.9e-6, identical argmax
+  on all 51,681 frames. There is no TensorFlow reference run; correctness rests on the
+  documented Keras semantics, the two independent implementations agreeing, and the
+  musically correct output (e.g. B7–E7–B7–F#7 on the B blues the DSP analyzer reads as one
+  Gmaj7).
+- **Front end:** pumpp's harmonic CQT (44.1 kHz, hop 4096, C1, 6 octaves × 36 bins,
+  harmonics 1 and 2, log magnitude) via librosa, run in the isolated venv with a pure-Python
+  stand-in for numba. Production would need a NumPy re-implementation of this CQT (librosa
+  cannot be a dependency: numba is blocked and heavy).
+- **Runtime (reference machine):** CPU: 0.17–0.19 s for 10 minutes of audio, +68 MiB peak.
+  DirectML: strict session works, all nodes on DirectML (no CPU fallback), max |Δ| vs CPU
+  5.4e-6, but **45 s per 10 minutes** — the bidirectional GRUs run step by step on the GPU —
+  so this model belongs on CPU. librosa CQT front end: 14.6 s for 80 minutes of audio.
+
+Chord accuracy, same scoring as above (CREMA's estimates outside maj/min count as misses;
+CREMA labels per frame at 10.8 frames/s, no beat synchronisation):
+
+| Data | n | maj/min: production → CREMA | full: production → CREMA | CREMA better / worse (±0.02) |
+|---|---|---|---|---|
+| GuitarSet comps, player 00 | 12 | 0.70 → **0.85** | 0.37 → 0.65 | 10 / 1 |
+| GuitarSet comps, player 03 (held out for our decoder) | 10 | 0.43 → **0.62** | 0.29 → 0.52 | 9 / 1 |
+| Winterreise HU33 (voice + piano) | 24 | 0.67 → 0.68 | 0.51 → 0.57 | 10 / 9 |
+| Synthetic benchmark | 13 | 0.86 → **0.94** | 0.72 → 0.87 | 6 / 7 |
+
+Regressions: clean synthetic pop pieces lose 0.02–0.04 (frame-level instead of beat-level
+boundaries); `03_Jazz3-137-Eb_comp` drops to 0.00 (Bb7/E7 alternation against a Pachelbel
+progression in Eb); nine Winterreise songs drop by more than 0.02 (largest D911-18,
+0.58 → 0.35). Gains: R&B sevenths with
+inversions 0.50 → 0.74, sax/violin R&B 0.74–0.86 → 0.97–0.98, the waltz 0.68 → 0.95, and
+most jazz/funk comps.
+
+With CREMA, chord maj/min would be ≥ 0.70 on GuitarSet player 00, synthetic and (at 0.68)
+just below on Winterreise; the held-out GuitarSet player stays below (0.62). Integration
+needs the NumPy CQT front end with a parity test against librosa, pinned hashes, an ADR,
+beat-synchronous smoothing, and key estimation from its chord output; it is proposed, not
+done.

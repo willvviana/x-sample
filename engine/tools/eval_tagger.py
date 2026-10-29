@@ -20,6 +20,9 @@ recording also appears in some YouTube upload cannot be ruled out):
   Classical; no voices.
 - GuitarSet (48 solo acoustic guitar recordings): Guitar present, every other instrument and
   voice absent; genre from the style code (Funk, Jazz, Rock, BN -> Latin; SS has no genre).
+- Schubert Winterreise, HU33 performance (24 songs, baritone + piano, 1933 recording, 22.05 kHz
+  mono): Piano and Singing from the score-aligned note annotation (instrument "piano" /
+  "voice"), every other instrument absent; genre Classical; no rapping or speech.
 
 Windows are the tagger's 10 s windows (5 s hop); a window is positive for a label when a
 note of a positive program starts inside it.
@@ -100,15 +103,16 @@ def gm_labels(program: int, is_drum: bool = False) -> tuple[set[str], set[str]]:
 
 
 def truth_from_notes(
-    notes: list[tuple[float, int, bool]], starts: list[int], n_frames: int, scored: list[str]
+    notes: list[tuple[float, int | str, bool]], starts: list[int], n_frames: int, scored: list[str]
 ) -> tuple[dict[str, bool | None], list[dict[str, bool | None]]]:
     """Piece and per-window truth from (onset s, program, is_drum) notes."""
 
-    def judge(subset: list[tuple[float, int, bool]]) -> dict[str, bool | None]:
+    def judge(subset: list[tuple[float, int | str, bool]]) -> dict[str, bool | None]:
         pos: set[str] = set()
         amb: set[str] = set()
         for _, prog, drum in subset:
-            p, a = gm_labels(prog, drum)
+            # A label name instead of a GM program: the dataset names the source directly.
+            p, a = ({prog}, set()) if isinstance(prog, str) else gm_labels(prog, drum)
             pos |= p
             amb |= a
         return {n: True if n in pos else (None if n in amb else False) for n in scored}
@@ -248,6 +252,36 @@ def guitarset(limit: int | None) -> list[dict[str, Any]]:
     return items
 
 
+def winterreise(limit: int | None) -> list[dict[str, Any]]:
+    root = DATA / "winterreise"
+    if not root.exists():
+        return []
+    items = []
+    names = {"piano": "Piano", "voice": "Singing"}
+    for wav in sorted((root / "01_RawData" / "audio_wav").glob("*_HU33.wav"))[:limit]:
+        note_csv = root / "02_Annotations" / "ann_audio_note" / f"{wav.stem}.csv"
+        with note_csv.open(encoding="utf-8") as f:
+            notes: list[tuple[float, int | str, bool]] = [
+                (float(r["start"]), names[r["instrument"]], False)
+                for r in csv.DictReader(f, delimiter=";")
+            ]
+        items.append(
+            {
+                "dataset": "Winterreise",
+                "item": wav.stem,
+                "audio": wav,
+                "notes": notes,
+                "scored": INSTRUMENTS + VOCALS,
+                "fixed": {
+                    **{g: g == "Classical" for g in GENRES},
+                    "Rapping": False,
+                    "Speech": False,
+                },
+            }
+        )
+    return items
+
+
 # --- scoring ---------------------------------------------------------------------------------
 
 
@@ -290,7 +324,17 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", default="directml", choices=("cpu", "directml"))
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument(
+        "--datasets", nargs="+", default=["babyslakh", "musicnet", "guitarset", "winterreise"]
+    )
+    ap.add_argument("--report", type=Path, default=REPORT)
     args = ap.parse_args()
+    parts = {
+        "babyslakh": babyslakh,
+        "musicnet": musicnet,
+        "guitarset": guitarset,
+        "winterreise": winterreise,
+    }
     models = default_data_dir() / "models"
     if not tagger.installed(models):
         sys.exit("the PANNs tagger export is not installed")
@@ -298,7 +342,7 @@ def main() -> None:
     rows = []
     # (dataset, label, level) -> [(score, truth)]
     pairs: dict[tuple[str, str, str], list[tuple[float, bool]]] = {}
-    for item in babyslakh(args.limit) + musicnet(args.limit) + guitarset(args.limit):
+    for item in [i for name in args.datasets for i in parts[name](args.limit)]:
         t0 = time.perf_counter()
         logmel = logmel_of(item["audio"])
         t1 = time.perf_counter()
@@ -393,8 +437,8 @@ def main() -> None:
         "pooled": pooled,
         "items": rows,
     }
-    REPORT.parent.mkdir(exist_ok=True)
-    REPORT.write_text(json.dumps(report_out, indent=1), "utf-8")
+    args.report.parent.mkdir(exist_ok=True)
+    args.report.write_text(json.dumps(report_out, indent=1), "utf-8")
     print("evaluated:", evaluated)
     print("genre evidence:", genre_evidence)
     for name in LABELS:

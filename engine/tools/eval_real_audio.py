@@ -427,6 +427,63 @@ def midi_tempo_map(
     return division, sorted(tempos) or [(0, 500000)], sorted(sigs), last
 
 
+# --- Schubert Winterreise (HU33) --------------------------------------------------------------
+
+
+def _swd_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(encoding="utf-8") as f:
+        return list(csv.DictReader(f, delimiter=";"))
+
+
+def winterreise(limit: int | None) -> list[dict[str, Any]]:
+    """Baritone + piano (Huesch 1933, public domain): global key, chords and downbeats (the
+    measure annotation). No beat or tempo annotation exists, so only downbeat F is scored."""
+    root = DATA / "winterreise"
+    if not root.exists():
+        return []
+    ann = root / "02_Annotations"
+    keys = {
+        (r["WorkID"], r["PerformanceID"]): r["key"]
+        for r in _swd_rows(ann / "ann_audio_globalkey.csv")
+    }
+    out = []
+    for wav in sorted((root / "01_RawData" / "audio_wav").glob("*_HU33.wav"))[:limit]:
+        song, performance = wav.stem.rsplit("_", 1)
+        tonic, mode = keys[(song, performance)].split(":")
+        ref_key = (pitch_class(tonic), "minor" if mode == "min" else "major")
+        chords = []
+        for r in _swd_rows(ann / "ann_audio_chord" / f"{wav.stem}.csv"):
+            h = harte(r["shorthand"])
+            if h is not None:
+                chords.append((float(r["start"]), float(r["end"]), h[0], h[1], h[0]))
+        # The last measure entry marks the end of the last note, not a downbeat.
+        downs = [
+            float(r["start"]) for r in _swd_rows(ann / "ann_audio_measure" / f"{wav.stem}.csv")
+        ][:-1]
+        rhythm, harmony, secs, dur = analyse(wav)
+        key = harmony.key_candidates[0]
+        row: dict[str, Any] = {
+            "dataset": "Winterreise",
+            "item": wav.stem,
+            "duration_s": round(dur, 1),
+            "bpm_est": round(rhythm.bpm, 1),
+            "downbeat_f": round(f_measure(rhythm.downbeats, downs), 3),
+            "key_ref": f"{tonic} {ref_key[1]}",
+            "key_est": key.label,
+            "key_mirex": mirex_key_score((key.tonic, key.mode), ref_key),
+            "chord_majmin": round(chord_overlap(est_chords(harmony), chords, True), 3),
+            "chord_full": round(chord_overlap(est_chords(harmony), chords, False), 3),
+            "analysis_s": round(secs, 2),
+        }
+        if NEURAL:
+            row["nn_downbeat_f"] = round(f_measure(list(NEURAL["downs"]), downs), 3)
+            row["nn_backend"] = NEURAL["backend"]
+        row.update(dspgrid_fields(ref_key, chords))
+        out.append(row)
+        print(json.dumps(row), flush=True)
+    return out
+
+
 def babyslakh(limit: int | None) -> list[dict[str, Any]]:
     root = DATA / "babyslakh" / "babyslakh_16k"
     out = []
@@ -526,12 +583,22 @@ if __name__ == "__main__":
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--beat-model", action="store_true")
     ap.add_argument("--backend", default="directml", choices=("cpu", "directml"))
+    ap.add_argument(
+        "--datasets", nargs="+", default=["guitarset", "musicnet", "babyslakh", "winterreise"]
+    )
+    ap.add_argument("--report", type=Path, default=REPORT)
     args = ap.parse_args()
     if args.beat_model:
         from xsample.config import default_data_dir
 
         BEAT_MODEL = beat_model.BeatTracker(default_data_dir() / "models", args.backend)
-    rows = guitarset(args.limit) + musicnet(args.limit) + babyslakh(args.limit)
+    parts = {
+        "guitarset": guitarset,
+        "musicnet": musicnet,
+        "babyslakh": babyslakh,
+        "winterreise": winterreise,
+    }
+    rows = [r for name in args.datasets for r in parts[name](args.limit)]
     report = {
         "kind": "real audio (licensed subsets); not comparable with the synthetic benchmark",
         "analyzer": "xsample.analysis.dsp (CPU)",
@@ -549,6 +616,6 @@ if __name__ == "__main__":
         "summary": summarise(rows),
         "items": rows,
     }
-    REPORT.parent.mkdir(exist_ok=True)
-    REPORT.write_text(json.dumps(report, indent=1), "utf-8")
+    args.report.parent.mkdir(exist_ok=True)
+    args.report.write_text(json.dumps(report, indent=1), "utf-8")
     print("SUMMARY", json.dumps(report["summary"], indent=1))
