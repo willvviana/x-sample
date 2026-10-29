@@ -22,8 +22,11 @@ Notes:
 - MusicNet keys come from the movement (e.g. Op. 14/2 i in G major), not only the work title;
   movements whose key differs from the title or is ambiguous are not key-scored.
 - MusicNet labels have a reported ~4 % error rate; GuitarSet chords are the performed (not the
-  lead-sheet) annotation, mapped to our five qualities; chords outside maj/min classes (dim,
-  hdim, aug, sus) are excluded from chord scores.
+  lead-sheet) annotation. Since 2026-10-29 they are reduced like mir_eval's `majmin`: the
+  chord's tones within the octave after extensions and omissions must form exactly a major or
+  minor triad (`B:7(#9)` → B major, `D:(5,2,b7,4)` → excluded); 9ths, 11ths and 13ths are
+  ignored; dim, hdim, aug, sus, power chords and chords without a third or fifth are excluded.
+  Before that, interval-only chords without a third were mapped to major (an evaluator bug).
 - The melody tracker only searches from C3 upwards; reference notes below C3 are excluded.
 
 Reproduce:
@@ -41,7 +44,10 @@ first 5 s skipped); MIREX key score (1 / 0.5 fifth / 0.3 relative / 0.2 parallel
 overlap at 50 ms steps (maj/min classes, and the full five qualities); melody note accuracy
 (reference notes whose middle falls on an estimated note within ±0.5 semitone).
 
-## Results — DSP analyzers (CPU), 2026-10-29
+## Results — DSP analyzers (CPU), 2026-10-29 (analyzer `dsp-0.2.0`)
+
+The tables in this section are the first measurement, kept for reference; the current
+numbers are in "Accuracy investigation" at the end.
 
 ### Synthetic (13 generated pieces with exact ground truth)
 
@@ -278,3 +284,111 @@ Front-end parity: the NumPy log-mel matches torchlibrosa within 3e-4 dB on bins 
 the checkpoint's within 1e-9. The tagging step is dominated by the second (32 kHz) decode, so
 DirectML saves little; it is used only after the same strict, profiled parity check as the
 beat model.
+
+## Accuracy investigation, 2026-10-29 (analyzer `dsp-0.2.1`)
+
+Goal: find out why key, chords, beats and tempo miss the v0.2.0 targets on real audio before
+assuming a larger model is needed. Nothing was downloaded; no threshold or acceptance target
+was changed.
+
+### Root causes found
+
+1. **Evaluation misalignment (evaluator).** With `--beat-model`, `eval_real_audio.py` scored
+   key and chords on harmony computed from the DSP beat grid, while the analysis job uses the
+   model's grid when the model is installed (`run.py`). Fixed: key/chord fields now come from
+   the production path; the DSP-grid result is kept as `dspgrid_key_mirex` and
+   `dspgrid_chord_majmin` for comparison.
+2. **Chord-label reduction (evaluator).** GuitarSet's performed chords are full jazz voicings
+   (`B:7(#9)/1`, `D:(5,2,b7,4)/4`, `G:9(13,*1,*5)/b7`). The old mapping read only the shorthand
+   and mapped interval-only chords without a third to major. Now a mir_eval-like `majmin`
+   reduction (see "Notes" above). This changes the measured chord score without any analyzer
+   change, so it is a **scoring correction, not an improvement**.
+3. **Chord decoder too sticky (analyzer).** In the chord HMM, one change cost 5.8 nats
+   (self-transition 0.85, 60 chord states), i.e. a summed cosine margin of ~0.49 at emission
+   scale 12. On real voicings the median per-beat margin between the best and second-best
+   template is ~0.03–0.06, so the decoder held one chord through whole progressions (Gmaj7
+   throughout the B blues `00_Jazz1-200-B_comp`; Em throughout `03_Jazz1-130-D_comp`). Key
+   estimation inherits this because chord roots feed its tonic bonus.
+4. **Fixed instrument/microphone resonances in GuitarSet's mono-mic audio (data).** The
+   long-term spectrum of every comp take shows peaks near 196 Hz and 210 Hz **in every key**
+   (Ab, A, B, D, Eb takes alike) — body resonances or open-string sympathetic ringing, not
+   played notes. They add G and Ab to both treble and bass chroma, which explains the
+   recurring G major / E minor estimates (Pachelbel progression in Eb → G minor for both
+   players; B blues → G major). This is specific to the recording; correcting it in the
+   analyzer would be fitting this dataset, so it is not corrected. GuitarSet's pickup-mix
+   audio would separate the effect (needs approval, `docs/MODELS.md`).
+5. **Annotation conventions (data).** GuitarSet keys are the lead-sheet key; solo takes are
+   single-line improvisations, so their key score measures something the audio barely
+   implies. MusicNet beat references follow the notated beat (eighths in compound meters),
+   which turns plausible tracking into 2:3 "errors" that Acc2 does not cover. BabySlakh
+   Track00012 scores F 0 for every tracker at the correct tempo (a MIDI-to-render offset is
+   likely) and Track00011's reference tempo map reads 250 BPM. No item was removed.
+6. **Tuning (ruled out as a main cause).** Estimated deviations from A440: GuitarSet +4 to
+   +11 cents, MusicNet −3 to +26 cents (the solo violin), BabySlakh ~1 cent — inside the
+   chroma's ±35-cent window.
+7. **Beats and tempo.** Remaining held-out errors are metrical-level choices (2:3, 3:4, ×2) and
+   expressive classical timing (Beat This! section above). Nothing safe to change without
+   new held-out data or a larger model; the minimal postprocessor stays the default.
+
+### Change made to the analyzer
+
+`harmony.CHORD_EMISSION_SCALE` 12 → 30 (the self-transition stays 0.85); `ANALYZER_VERSION`
+`dsp-0.2.0` → `dsp-0.2.1`, which invalidates cached sidecars. User corrections are untouched
+(they live in the manifest). To avoid fitting the evaluation data, a sweep of scale
+{6, 12, 20, 30, 45} × self-transition {0.5, 0.7, 0.85, 0.95} was judged only on the
+**synthetic benchmark and GuitarSet player 00**; player 03 was held out. Results are flat from
+20 to 45 on the development data; 30 is in the middle of that plateau.
+
+| Chord maj/min (DSP grid, decoder only) | Synthetic (13) | GuitarSet p00 comps (dev, 12) | GuitarSet p03 comps (held out, 10) |
+|---|---|---|---|
+| scale 12 (before) | 0.82 | 0.58 | 0.42 |
+| scale 30 (after) | 0.86 | 0.69 | 0.46 |
+
+A regression test (`test_chord_decoder_follows_dense_voicings`) builds a two-beat progression
+of 9th/13th voicings over a leaky chroma floor; it fails at the old scale (0.56) and passes at
+30 (0.81).
+
+### Before / after on real audio (production path: Beat This! grid on DirectML)
+
+"Before" = the committed evaluator and analyzer; "aligned" = evaluator fixes 1–2 only;
+"after" = aligned + analyzer change 3. Same files, same metrics. Beat This! was trained on
+GuitarSet, but key and chords are computed by the DSP analyzers, which were not fitted to it
+except as described above (player 00).
+
+| Subset | n | Key: before → aligned → after | Chord maj/min: before → aligned → after | Chord full: before → after |
+|---|---|---|---|---|
+| GuitarSet Funk comp | 12 | 0.72 → 0.76 → 0.76 | 0.49 → 0.57 → **0.62** | 0.26 → 0.34 |
+| GuitarSet Jazz comp | 12 | 0.48 → 0.48 → 0.58 | 0.30 → 0.41 → **0.54** | 0.19 → 0.33 |
+| GuitarSet Funk solo | 12 | 0.43 → 0.39 → 0.52 | — | — |
+| GuitarSet Jazz solo | 12 | 0.32 → 0.29 → 0.38 | — | — |
+| GuitarSet player 00 (dev) | 24 | 0.56 → 0.57 → 0.71 | 0.52 → 0.57 → 0.70 | — |
+| **GuitarSet player 03 (held out)** | 24 | **0.42 → 0.40 → 0.40** | **0.28 → 0.39 → 0.43** (10 scored) | — |
+| GuitarSet (all) | 48 | 0.49 → 0.48 → **0.56** | 0.40 → 0.49 → **0.58** | 0.22 → 0.33 |
+| MusicNet (key-scored) | 7 | 0.80 → 0.90 → 0.80 | — | — |
+
+Two comp takes of player 03 have no performed chord that reduces to maj/min after fix 2 and
+are no longer chord-scored (12 → 10). Synthetic benchmark after the change: Acc1 0.77,
+Acc2 1.00, beat F 0.92, downbeat F 0.92, key 0.89 (was 0.91: the 3/4 piece, already at the
+wrong metrical level, moves from Bb major to D minor), chord maj/min 0.86 (0.82), chord full
+0.72 (0.66), melody 0.81. Beats and tempo are unchanged by design.
+
+Regressions: MusicNet 1759 (Schubert D.958 iii, C minor) is estimated as its relative major
+again (it was right only with the aligned grid and the old decoder; the relative-key choice
+there is fragile), and per-item chord scores drop on 5 of 22 comps (largest:
+`03_Jazz3-137-Eb_comp` 1.00 → 0.49). The held-out key score does not improve.
+
+### Status against the v0.2.0 targets
+
+| Target | Result (held-out or fairest reading) | Met? |
+|---|---|---|
+| Tempo Acc2 ≥ 95 % | 0.70 pooled held out (MusicNet 0.50, BabySlakh 0.80) | no |
+| Beat F ≥ 0.85 | 0.74 pooled held out | no |
+| Key ≥ 80 % | MusicNet 0.80 (7 movements); GuitarSet 0.56 (player 03 held out: 0.40) | only on classical piano, small n |
+| Chord maj/min ≥ 70 % | GuitarSet 0.58 (player 03 held out: 0.43) | no |
+| Singing / R&B | no labelled data | not validated |
+
+The decoder fix removes a real defect, but templates over chroma remain the limit on real
+voicings: even the per-beat best template is Gmaj7 for a B7(#9) comp. Reaching the chord and
+key targets needs a learned chord model or a front end that suppresses partials and fixed
+resonances (NNLS-style), and labelled audio closer to the product's material (sung, produced
+music). Candidates and their licenses: `docs/MODELS.md`, "Accuracy candidates".

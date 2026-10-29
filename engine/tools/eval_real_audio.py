@@ -40,7 +40,7 @@ from tests.analysis_fixtures import (  # noqa: E402
 from xsample.analysis import beat_dbn, beat_model  # noqa: E402
 from xsample.analysis.dsp import ANALYSIS_RATE, FeatureExtractor  # noqa: E402
 from xsample.analysis.harmony import analyze_harmony  # noqa: E402
-from xsample.analysis.rhythm import analyze_rhythm  # noqa: E402
+from xsample.analysis.rhythm import analyze_rhythm, apply_tracked_beats  # noqa: E402
 from xsample.audio.ffmpeg import decode_f32  # noqa: E402
 
 DATA = Path(os.environ["LOCALAPPDATA"]) / "X-Sample" / "eval-datasets"
@@ -60,30 +60,81 @@ def pitch_class(name: str) -> int:
     return pc % 12
 
 
+# Harte shorthands as semitone sets (Harte et al. 2005), for the majmin reduction below.
+HARTE_QUALITIES: dict[str, set[int]] = {
+    "maj": {0, 4, 7},
+    "min": {0, 3, 7},
+    "dim": {0, 3, 6},
+    "aug": {0, 4, 8},
+    "maj7": {0, 4, 7, 11},
+    "min7": {0, 3, 7, 10},
+    "7": {0, 4, 7, 10},
+    "dim7": {0, 3, 6, 9},
+    "hdim7": {0, 3, 6, 10},
+    "minmaj7": {0, 3, 7, 11},
+    "maj6": {0, 4, 7, 9},
+    "min6": {0, 3, 7, 9},
+    # Upper extensions (9, 11, 13) lie above the octave and are not part of the reduction.
+    "9": {0, 4, 7, 10},
+    "maj9": {0, 4, 7, 11},
+    "min9": {0, 3, 7, 10},
+    "11": {0, 4, 7, 10},
+    "min11": {0, 3, 7, 10},
+    "13": {0, 4, 7, 10, 9},
+    "maj13": {0, 4, 7, 11, 9},
+    "min13": {0, 3, 7, 10, 9},
+    "sus2": {0, 2, 7},
+    "sus4": {0, 5, 7},
+    "5": {0, 7},
+    "1": {0},
+}
+_DEGREE = {1: 0, 2: 2, 3: 4, 4: 5, 5: 7, 6: 9, 7: 11}
+
+
+def _degree(token: str) -> int | None:
+    """Semitone of a scale degree within the octave; None for 9, 11, 13 (ignored, as
+    mir_eval with reduce_extended_chords=False)."""
+    number = int(token.strip("b#"))
+    if number not in _DEGREE:
+        return None
+    return (_DEGREE[number] - token.count("b") + token.count("#")) % 12
+
+
 def harte(label: str) -> tuple[int, str] | None:
-    """Harte chord label -> (root, one of our 5 qualities); None if outside maj/min classes."""
+    """Harte label -> (root, "maj" | "min" | "7" | "maj7" | "min7"), or None when the chord is
+    not a major or minor triad (excluded), following mir_eval `majmin`: the semitones 0-7 of
+    the chord after extensions and omissions must be exactly a major or minor triad. So
+    "B:7(#9)" is major, while "D:(5,2,b7,4)" (no third, added 2nd/4th), "A:7(*5)" (fifth
+    omitted), sus, power, dim and aug chords are excluded.
+    """
     if label in ("N", "X"):
         return None
     root, _, rest = label.partition(":")
-    quality = re.split(r"[(/]", rest or "maj")[0]
-    table = {
-        "maj": "maj",
-        "maj6": "maj",
-        "": "maj",
-        "7": "7",
-        "9": "7",
-        "11": "7",
-        "13": "7",
-        "maj7": "maj7",
-        "maj9": "maj7",
-        "min": "min",
-        "min6": "min",
-        "min7": "min7",
-        "min9": "min7",
-        "min11": "min7",
-    }
-    q = table.get(quality)
-    return None if q is None else (pitch_class(root), q)
+    rest = rest.split("/")[0] or "maj"
+    quality, _, ext = rest.partition("(")
+    if quality == "" and ext:
+        tones: set[int] = {0}
+    elif quality in HARTE_QUALITIES:
+        tones = set(HARTE_QUALITIES[quality])
+    else:
+        return None
+    for token in filter(None, ext.rstrip(")").split(",")):
+        token = token.strip()
+        semitone = _degree(token.lstrip("*"))
+        if semitone is None:
+            continue
+        if token.startswith("*"):
+            tones.discard(semitone)
+        else:
+            tones.add(semitone)
+    triad = {t for t in tones if t < 8}
+    if triad == {0, 4, 7}:
+        q = {"7": "7", "9": "7", "11": "7", "13": "7", "maj7": "maj7", "maj9": "maj7"}
+        return pitch_class(root), q.get(quality, "maj")
+    if triad == {0, 3, 7}:
+        q = {"min7": "min7", "min9": "min7", "min11": "min7", "min13": "min7"}
+        return pitch_class(root), q.get(quality, "min")
+    return None
 
 
 def analyse(path: Path) -> tuple[Any, Any, float, float]:
@@ -109,10 +160,30 @@ def analyse(path: Path) -> tuple[Any, Any, float, float]:
         NEURAL.update(
             beats=beats, downs=downs, secs=time.perf_counter() - t1, backend=report.backend
         )
+        # Harmony as the analysis job computes it when the model is installed (run.py):
+        # beat-synchronous on the model's grid. The DSP-grid result stays as dspgrid_*.
+        tracked = apply_tracked_beats(rhythm, features, beats, downs, beat_model.DISPLAY_NAME)
+        NEURAL["dspgrid_harmony"] = harmony
+        harmony = analyze_harmony(features, tracked.beats, tracked.downbeats, tracked.onsets)
         t2 = time.perf_counter()
         dbn = beat_dbn.decode(beat, down)
         NEURAL.update(dbn_beats=dbn.beats, dbn_downs=dbn.downbeats, dbn_s=time.perf_counter() - t2)
     return rhythm, harmony, secs, features.duration_samples / ANALYSIS_RATE
+
+
+def dspgrid_fields(ref_key: Any, chords: Any) -> dict[str, Any]:
+    """Key/chord scores of harmony computed on the DSP beat grid (only with --beat-model), to
+    show what the beat grid alone changes."""
+    h = NEURAL.get("dspgrid_harmony")
+    if h is None:
+        return {}
+    out: dict[str, Any] = {}
+    if ref_key is not None:
+        k = h.key_candidates[0]
+        out["dspgrid_key_mirex"] = mirex_key_score((k.tonic, k.mode), ref_key)
+    if chords:
+        out["dspgrid_chord_majmin"] = round(chord_overlap(est_chords(h), chords, True), 3)
+    return out
 
 
 def any_level_f(est: Any, ref: Any) -> float:
@@ -222,6 +293,7 @@ def guitarset(limit: int | None) -> list[dict[str, Any]]:
             "key_mirex": mirex_key_score((key.tonic, key.mode), ref_key),
             "analysis_s": round(secs, 2),
         }
+        row.update(dspgrid_fields(ref_key, chords if row["part"] == "comp" else None))
         if row["part"] == "comp" and chords:
             row["chord_majmin"] = round(chord_overlap(est_chords(harmony), chords, True), 3)
             row["chord_full"] = round(chord_overlap(est_chords(harmony), chords, False), 3)
@@ -285,6 +357,7 @@ def musicnet(limit: int | None) -> list[dict[str, Any]]:
             tonic, mode = MUSICNET_KEYS[rid]
             row["key_ref"] = f"{tonic} {mode}"
             row["key_mirex"] = mirex_key_score((key.tonic, key.mode), (pitch_class(tonic), mode))
+            row.update(dspgrid_fields((pitch_class(tonic), mode), None))
         violin = [
             (int(r["start_time"]) / sr, int(r["end_time"]) / sr, int(r["note"]))
             for r in labels
@@ -433,7 +506,9 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "dbn_downbeat_f",
         "nn_downbeat_f",
         "key_mirex",
+        "dspgrid_key_mirex",
         "chord_majmin",
+        "dspgrid_chord_majmin",
         "chord_full",
         "melody_note_acc",
         "violin_melody_note_acc",

@@ -26,9 +26,9 @@ from tests.analysis_fixtures import (
 )
 from tests.audio_fixtures import write_wav
 from tests.conftest import wait_for_job
-from xsample.analysis.dsp import ANALYSIS_RATE, FeatureExtractor
+from xsample.analysis.dsp import ANALYSIS_RATE, CHROMA_HOP, FeatureExtractor, Features
 from xsample.analysis.effective import apply_beat_grid, apply_chords, effective
-from xsample.analysis.harmony import analyze_harmony
+from xsample.analysis.harmony import analyze_harmony, recognise_chords
 from xsample.analysis.rhythm import analyze_rhythm
 from xsample.analysis.run import AnalysisCancelledError, analyze_file, cache_key
 from xsample.analysis.schema import ANALYZER_VERSION, ChordOut
@@ -113,6 +113,50 @@ def test_silence_reports_no_rhythm_instead_of_inventing_one() -> None:
     harmony = analyze_harmony(features, rhythm.beats, rhythm.downbeats, rhythm.onsets)
     assert harmony.melody_notes == []
     assert all(c.root is None for c in harmony.chords)
+
+
+def test_chord_decoder_follows_dense_voicings() -> None:
+    """Extended voicings over a leaky floor leave each beat only a small margin between
+    templates; the decoder must still follow a two-beat harmonic rhythm instead of holding one
+    chord (it did, with the emission scale too low for its switching cost)."""
+    fps = ANALYSIS_RATE / CHROMA_HOP
+    beat_s, beats_per_chord = 0.5, 2
+    # Cmaj9, Am9, Dm9, G13 (roots 0, 9, 2, 7): 7ths, 9ths and 13ths make neighbours similar.
+    voicings = [(0, 4, 7, 11, 2), (9, 0, 4, 7, 11), (2, 5, 9, 0, 4), (7, 11, 2, 5, 4)]
+    refs = [(0, "maj"), (9, "min"), (2, "min"), (7, "maj")]
+    rng = np.random.default_rng(3)
+    frames, bass_frames, truth = [], [], []
+    for rep in range(4):
+        for i, notes in enumerate(voicings):
+            start = (rep * len(voicings) + i) * beats_per_chord * beat_s
+            n = round(beats_per_chord * beat_s * fps)
+            v = np.full(12, 0.35)
+            v[list(notes)] += 0.4
+            v[notes[0]] += 0.15
+            frames.append(v + 0.08 * rng.standard_normal((n, 12)))
+            b = np.full(12, 0.2)
+            b[notes[0]] = 0.8
+            bass_frames.append(b + 0.05 * rng.standard_normal((n, 12)))
+            truth.append((start, start + beats_per_chord * beat_s, *refs[i], refs[i][0]))
+    chroma = np.clip(np.concatenate(frames), 0, None).astype(np.float32)
+    bass = np.clip(np.concatenate(bass_frames), 0, None).astype(np.float32)
+    duration = len(chroma) / fps
+    features = Features(
+        duration_samples=round(duration * ANALYSIS_RATE),
+        onset=np.zeros(0, np.float32),
+        onset_low=np.zeros(0, np.float32),
+        mel=np.zeros((0, 1), np.float32),
+        rms=np.zeros(0, np.float32),
+        chroma=chroma,
+        bass_chroma=bass,
+        pitch_midi=np.zeros(0, np.float32),
+        pitch_salience=np.zeros(0, np.float32),
+    )
+    beats = np.arange(beat_s, duration, beat_s)
+    chords = recognise_chords(features, beats)
+    est = [(c.start, c.end, c.root, c.quality) for c in chords]
+    assert chord_overlap(est, truth, True) >= 0.75
+    assert len(chords) >= 12
 
 
 # --- orchestrator, sidecar, effective view ---------------------------------------------------

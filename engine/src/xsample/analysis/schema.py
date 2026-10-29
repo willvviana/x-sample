@@ -15,7 +15,8 @@ from pydantic import BaseModel, ConfigDict, Field
 # 3: tagger, genres/instruments/vocals may be TagsOut, timings.tagger_s.
 SCHEMA_VERSION = 3
 # Bump whenever an analyzer change can alter results; it invalidates every cached sidecar.
-ANALYZER_VERSION = "dsp-0.2.0"
+# dsp-0.2.1: chord HMM emission scale 12 -> 30 (harmony.CHORD_EMISSION_SCALE).
+ANALYZER_VERSION = "dsp-0.2.1"
 ANALYZER_ID = "xsample.analysis.dsp"
 
 

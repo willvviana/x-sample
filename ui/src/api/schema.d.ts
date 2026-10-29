@@ -657,7 +657,7 @@ export interface components {
       analyzer_id: string;
       /**
        * Analyzer Version
-       * @default dsp-0.2.0
+       * @default dsp-0.2.1
        */
       analyzer_version: string;
       /**

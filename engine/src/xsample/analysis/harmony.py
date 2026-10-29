@@ -30,6 +30,13 @@ QUALITIES: dict[str, tuple[int, ...]] = {
     "min7": (0, 3, 7, 10),
 }
 NO_CHORD = "N"
+# Chord HMM. A change costs log(STAY / ((1 - STAY) / 60)) = 5.8 nats; with the emission
+# scale that is a cosine margin of ~0.19 summed over the beats of the new chord. At 12 it
+# was ~0.49, while the typical per-beat margin on real voicings is ~0.04, so the decoder held
+# one chord through whole jazz/funk progressions. 30 was chosen on the synthetic benchmark
+# and one GuitarSet player (results are flat from 20 to 45); the other player is held out.
+CHORD_EMISSION_SCALE = 30.0
+CHORD_STAY = 0.85
 
 
 @dataclass
@@ -180,10 +187,10 @@ def recognise_chords(features: Features, beats: F64) -> list[ChordSegment]:
     n, k = sim.shape
     no_chord = np.where(energy < 0.05, 1.0, 0.0)  # silent segments
     obs = np.concatenate([sim, (0.55 + 0.5 * no_chord)[:, None]], axis=1)
-    logp = 12.0 * obs
+    logp = CHORD_EMISSION_SCALE * obs
     states = k + 1
-    trans = np.full((states, states), np.log(0.15 / (states - 1)))
-    np.fill_diagonal(trans, np.log(0.85))
+    trans = np.full((states, states), np.log((1.0 - CHORD_STAY) / (states - 1)))
+    np.fill_diagonal(trans, np.log(CHORD_STAY))
     score = logp[0].copy()
     back = np.zeros((n, states), dtype=np.int64)
     for i in range(1, n):

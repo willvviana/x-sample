@@ -71,3 +71,30 @@ options:
 - **MusicNet, more recordings** (CC BY 4.0): 11.1 GB archive, streamed prefix only (we hold
   400 MB / 10 recordings). Its beat references follow the notated beat (eighths in compound
   meters), so it measures metrical-level agreement with the score as much as tracking.
+
+## Accuracy candidates — key, chords, beats, vocals, R&B (research 2026-10-29)
+
+Context: the accuracy investigation in `docs/EVALUATION.md` ("Accuracy investigation"). Nothing
+below has been downloaded. Licenses were read from the projects' own pages where stated;
+entries marked *unverified* need checking before any approval.
+
+### Models
+
+| Candidate | Task | License | Training data (provenance) | Download / runtime | Fits Windows + 3700X + RX 5700 XT? | Expected benefit / limits | Independent of our eval data? |
+|---|---|---|---|---|---|---|---|
+| Beat This! **final0** (CPJKU) | beats, downbeats | MIT (code + weights, same as small0) | same 16 sets as small0 (incl. GuitarSet, Harmonix, RWC; YouTube/commercial audio in some) | ~80 MB (20.3 M params) checkpoint → ONNX via the existing isolated export | Yes: same graph family as small0, same verification path; several times the compute per chunk (to be measured) | The paper reports a somewhat higher GTZAN F for the full model than for the small one; may close part of the 0.74 → 0.85 held-out beat gap. Does not address metrical level (2:3) by itself | MusicNet, BabySlakh: yes. GuitarSet: no |
+| CREMA chord model (McFee & Bello 2017) | chords (602 classes), structured training | BSD-2-Clause (repo LICENSE) | Isophonics, Billboard, RWC-Pop, uspop (~1200 commercial pop/rock tracks, annotations only) | small (a few MB of weights; *size unverified*); Keras/TensorFlow — would need a TF → ONNX conversion in a temporary venv | Yes after ONNX conversion (small conv + GRU; DirectML op support unverified) | Learned features handle extended voicings far better than templates; trained on pop, not jazz guitar | GuitarSet, Winterreise: yes |
+| BTC (Park et al., ISMIR 2019) | chords (majmin or 170 classes) | code MIT; **weights' license not stated** upstream (a third-party conversion is CC BY-NC-SA) | Isophonics, Robbie Williams, UsPop2002 | ~12 MB *unverified*; PyTorch → ONNX | Yes (transformer, small) | Similar to CREMA; bidirectional attention gives stable segments | GuitarSet: yes. **Blocked until the weights' license is confirmed** |
+| NNLS-chroma-style front end (Mauch & Dixon 2010), re-implemented | chroma for key/chords | algorithm (paper); the Vamp plugin is GPL — do not copy code | none (no training) | no download; NumPy | Yes | Tuning estimation, log-frequency spectrogram, note-salience by NNLS against harmonic templates — reduces partials and fixed resonances leaking into chroma. Moderate effort; gains uncertain | n/a |
+| madmom / Essentia chord, key, beat models | — | **non-commercial** (CC BY-NC-SA) | — | — | — | **Excluded** | — |
+
+### Datasets
+
+| Dataset | Content | License / commercial use | Size, selective fetch | What it would validate | Independence |
+|---|---|---|---|---|---|
+| **Schubert Winterreise** v2.1 (Zenodo 10839767) | 24 songs; **baritone + piano**; audio of 2 of 9 performances included (one CC BY 3.0 from the Isabella Stewart Gardner Museum, no modified redistribution; one public domain) | CC BY 3.0 (attribution) | one 517 MB zip; members can be range-fetched (we only need audio + chord/key/measure CSVs) | **singing recall** (voice present throughout), piano, global/local **key**, **chords**, measures (downbeats) | Not in Beat This!, AudioSet (as far as known) or CREMA/BTC training. Classical Lied only — not R&B |
+| **OpenMIC-2018** (Zenodo 1432913) | 20,000 × 10 s FMA excerpts, crowd labels for 20 instruments incl. **voice, saxophone, piano, violin** | CC BY 4.0 (dataset); audio under each track's CC license (some NC) | one 2.4–2.6 GB `.tgz` (gzip: streamed from the start only) | instrument and **voice** recall/precision on produced, mixed music; genre via FMA metadata (incl. Soul-RnB) | FMA audio is not AudioSet; YouTube re-uploads cannot be ruled out |
+| FMA metadata + Soul-RnB subset | genre labels from uploaders; Soul-RnB is a top-level FMA genre | metadata CC BY 4.0; audio per-track CC (filter to commercial-compatible licenses) | `fma_metadata.zip` (~342 MB) + selected tracks from `fma_large`/`fma_full` zips by range request | **R&B genre** precision/recall (noisy, uploader-assigned labels) | as above |
+| Medley-solos-DB 1.2 (Zenodo 3464194) | 3 s solo clips: piano, violin, tenor sax, **female singer**, … | CC BY 4.0 | one 7.9 GB `.tar.gz`, no selective fetch | solo instrument / singing recall (not mixtures) | derived from MedleyDB (some tracks may be on YouTube) |
+| GuitarSet **hex-pickup mix** audio | the same 48 takes we hold, recorded via pickup instead of the mic | CC BY 4.0 | range-fetch from `audio_mono-pickup_mix.zip` | separates the mic/body-resonance bias from the analyzer (see EVALUATION) | same items — diagnostic only, not new evidence |
+| Harmonix Set, GTZAN, Isophonics, Billboard, MUSDB18, MedleyDB, MoisesDB, IRMAS | — | audio copyrighted, no clear license, or non-commercial | — | — | Harmonix and others are also in Beat This!'s training set. **Not proposed** |
