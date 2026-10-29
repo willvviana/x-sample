@@ -143,6 +143,22 @@ Template:
 - Risks: Exotic devices (exclusive-mode only, >2 channels) are untested. Loopback only captures what Windows renders to that endpoint.
 - Alternatives considered: sounddevice (no loopback), `soundcard` (loopback but heavier and less controllable), a browser `getUserMedia` recorder (cannot capture system audio, and keeps audio in the browser).
 
+## ADR-0011 — Musical analysis: DSP analyzers, versioned sidecars, corrections in the manifest
+- Status: Accepted
+- Date: 2026-10-29
+- Context: v0.2.0 needs tempo, beats, meter, groove, key, chords, melody and sections that later features (editing grid, generation, intro/outro repair) build on. Recognition models need approval and evaluation first, and results must never be invented.
+- Decision:
+  - **Analyzers:** NumPy-only DSP in `xsample.analysis` at 22.05 kHz mono with three streaming framers (rhythm 2048/256, pitch 4096/256, chroma 8192/2048). Audio is decoded by FFmpeg in bounded chunks, so memory follows the number of frames, not the samples (10 min: about 216 MiB peak worker memory). The analyzers run in an `analyze_audio` worker job (`public=False`, CPU, cancellable between chunks and stages). Results are labelled `backend: "cpu"`; nothing claims GPU use.
+  - Methods: spectral-flux onsets; comb-weighted autocorrelation tempo with a log-normal prior and half/double candidates; dynamic-programming beat tracking with a time-varying period; off-beat phase check from low-band energy; beat-grid completion at the edges; meter/downbeats from low-band accent and chroma change; Temperley-style key profiles (natural-minor-aware) plus tonic evidence from bass and chord roots, and a phrase-start bass tie-break between relative keys; HMM local keys; beat-synchronous chord templates (maj, min, 7, maj7, min7, no-chord) with median flooring and Viterbi smoothing; harmonic-summation melody with whitening, fundamental gating and Viterbi tracking; Foote novelty sections.
+  - **Results** are a versioned sidecar `analysis/results/<source_id>/<cache_key>.json` (`schema_version`, `analyzer_id`, `analyzer_version`, parameters, backend, timings, created time). `cache_key = sha256(media PCM SHA-256, analyzer version, schema version, parameters)`. A different working copy or analyzer version gives a different key, so stale results are never shown as current. A successful run deletes older sidecars of that source. Positions are integer samples at the project rate, relative to the source.
+  - **Corrections** (beat grid: half/double/fixed BPM, offset, meter, downbeat shift; key; chord spans; genre/instrument tags) live in the manifest under `analysis[source_id]` and change only through `ProjectService.edit`. The API returns detected results, corrections and an *effective* view computed by the engine. Re-running analysis never touches corrections.
+  - Manifest **format 2** adds `analysis`. Format-1 manifests load unchanged and are written back as format 2. v0.1.0 refuses format 2 with its existing "newer X-Sample" message.
+  - Genre, instrument and vocal recognition return an explicit `unavailable` result with the reason until a model is approved, evaluated and adopted (ADR-0012, pending). Users can add tags manually.
+  - Boundary measurements for intro/outro repair (requirement 13) are recorded as raw values only: edge sample, edge level, beat offset, position in the bar, chord at the edge and whether it is the tonic.
+- Consequences: Analysis is fast (10 min of audio in about 13 s on the reference CPU) and needs no download. Accuracy is good on clean synthetic material, but much lower on real recordings (see `docs/EVALUATION.md`). The v0.2.0 real-audio acceptance targets are not met by DSP alone.
+- Risks: Tempo octave and 4:3 errors on dense or drumless material; beat phase on solo instruments; seventh chords under a lead line; melody below C3 is not searched. Scores are not calibrated probabilities and the UI says so.
+- Alternatives considered: librosa/madmom/Essentia (extra heavy dependencies and, for Essentia models, non-commercial licenses); learned beat/key/chord models (planned through ADR-0012 after approval and evaluation).
+
 ## Backlog (decisions not yet made)
 - Desktop packaging: Tauri vs Electron vs browser-only.
 - Specific models per feature (separation, transcription, voice conversion, generation) and their licenses.

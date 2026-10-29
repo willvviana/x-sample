@@ -17,46 +17,72 @@ Each phase ends with working, tested functionality before the next begins. Model
 - **Known limitations:** playback is rendered previews (max 120 s) rather than a real-time mixer; clips cannot yet be dragged on the timeline (the API supports `move`); no undo/redo yet (edits are logged in `history`); time-stretch/non-unity time maps rejected; only the default sample-rate choices; one open project per engine; drag-and-drop import not implemented (file picker only); devices needing exclusive mode or more than two channels are untested.
 - **Exit met:** create/open/save a project; record and import 10-minute files with bounded memory; view waveforms; slice and export samples.
 
-## Phase 2 — AI analysis
-- Tempo, beat grid, downbeats, key/scale, chords, onsets, loudness (LUFS) — DSP-first, ML where it improves accuracy.
-- Transcription and word-level lyric alignment (Whisper-class model; candidates: whisper.cpp with Vulkan runner, or ONNX on DirectML/CPU — decided by probes).
-- Auto-tagging (instrument, genre, mood) for sample browsing.
-- **Exit:** analysis panel with results stored as versioned sidecars; results editable by the user.
+## V1.0.0 milestones
 
-## Phase 3 — Source separation
-- Stem separation: vocals, drums, bass, other (Demucs/HTDemucs-class or MDX-class via ONNX + DirectML, CPU fallback).
-- Chunked inference with overlap; chunk size chosen from measured timings and VRAM budget.
-- Quality presets (fast/balanced/best) mapped to model size, overlap and shifts.
-- **Exit:** separate a 10-minute track on the RX 5700 XT within budget; stems appear as tracks.
+V1 is complete when a user can, entirely on this machine: import a sample (1); see its genres, instruments, tempo, rhythm, key, chords and structure (2); separate vocals and instruments where supported (3); add complementary instruments (4); replace or remove instruments (5); transform it into another genre (6); replace or generate sung vocals (7); rewrite lyrics under word/rhyme/syllable/meaning constraints (8); align singing to melody, rhythm and phrasing (9); keep or deliberately change pulse, groove, harmony and dynamics (10); edit non-destructively on multiple tracks (11); preview, compare and export the result (12); and repair or extend samples that start or end unnaturally with fades, smoothing or generated intros/outros (13). Numbers in brackets refer to these requirements.
 
-## Phase 4 — Vocal and lyrics replacement
-- Vocal conversion (RVC/SVC-class) with consent confirmation; PyTorch-only models get per-model adapters only if probes pass.
-- Lyric replacement: align original lyrics, edit text, re-synthesize singing preserving melody and timing; word timings follow edits via the time map.
-- Pitch editing and timing correction on isolated vocals.
-- **Exit:** replace a phrase in a separated vocal and re-mix it convincingly.
+Milestones are built one at a time; each needs passing acceptance tests before the next starts. Model choices are candidates until an ADR is accepted and downloads are approved.
 
-## Phase 5 — Genre transformation
-- Style/genre transfer conditioned on analysed tempo, key and structure.
-- Re-arrangement: keep selected stems, regenerate others in a target genre.
-- Timbre transfer for individual stems.
-- **Exit:** transform a loop into a different genre while keeping key and tempo.
+### Requirement 13 — Intelligent intro and outro
+Imported audio often starts or stops mid-phrase. X-Sample must detect this and offer repairs, from simple boundary fixes to generated introductions and endings. It is delivered across milestones (see the [13] items below), not as one release.
+- **Detect:** abrupt starts and stops, clicks/DC steps at the boundaries, truncated notes (energy still sustaining at the cut), incomplete phrases (cut away from a bar/phrase boundary), and missing resolution (final chord or melody note off the tonic/expected cadence). Findings carry a confidence and the evidence used; nothing is reported as a problem without a measured cause.
+- **Simple repairs:** automatic fade-in/out, crossfade and transient smoothing for simple boundary problems, sample-accurate and non-destructive.
+- **Generated intros/outros:** AI-generated material conditioned on the original sample. Intros establish the musical context before the sample begins; endings complete melodic phrases, resolve the harmony and let instruments decay naturally. Genre, BPM, beat alignment, key, chords, instrumentation, timbre, groove, dynamics and phrasing are preserved.
+- **Controls:** adjustable duration (in bars), style, instrumentation and transition type; several alternatives per request; before/after preview; every result is a separate clip that can be removed.
+- **Quality bar:** no clicks, clipping, sudden level changes, timing drift or audible seams at the join (measured, not judged by ear only).
+- **Scope:** R&B, piano and violin arrangements are priority test cases; other genres and instruments are not restricted.
+- **Honesty:** AI music continuation is not claimed as implemented until real local inference has been demonstrated and evaluated on the reference machine. Until then the UI offers only the DSP repairs.
 
-## Phase 6 — Instrument generation
-- Generate instrument parts from prompts plus musical context (key, tempo, chords).
-- MIDI-first option rendered with local instruments/soundfonts.
-- Continuation and infill for regions.
-- **Exit:** generate a part that is in time and in key with the project.
+### v0.2.0 — Musical intelligence (analysis) [2, 10, 13] — in progress
+- Tempo (with changes), beats, downbeats, meter where reliable, subdivisions, onsets, swing/groove, sections; half/double-time candidates kept; manual beat-grid correction.
+- Multi-label genre and instrument tags with confidences, per-section/per-window activity, editable tags; uncertain results shown as uncertain.
+- Key (global and local), mode, chords, harmonic rhythm, predominant melody contour; correction of key, chords and tempo.
+- Vocal presence and vocal activity regions (no lyric transcription claims).
+- Versioned analysis sidecars (model/version, parameters, source hash, backend, timings, confidences), cached and invalidated by audio change; user corrections stored separately and preserved on re-run.
+- Analysis workspace: tags, BPM/meter, beat grid on the waveform, key/chord lane, sections, vocal activity, confidence indicators, correction controls.
+- Boundary information for [13], recorded in the analysis sidecar with no repair actions yet: onset/transient and level at the first and last samples, whether a note is still sustaining at the cut, the position of the start/end relative to the beat/bar grid and section boundaries, and the first/last chord against the detected key.
+- **Status (2026-10-29):** built and tested — DSP analyzers (tempo/beats/downbeats/meter, groove, onsets, key and local keys, chords, harmonic rhythm, bass line, melody notes with articulation/vibrato, sections, loudness), the `analyze_audio` worker job, versioned sidecar cache, manifest corrections (format 2) with an engine-computed effective view, API, Analysis panel with beat grid on the waveform, boundary measurements (ADR-0011). Not done: genre/instrument/vocal recognition (needs approved models; shown as unavailable), DirectML parity (no model yet). Real-audio accuracy is below the targets below (`docs/EVALUATION.md`), so v0.2.0 is not complete.
+- **Acceptance:** on the labelled evaluation set — tempo Acc2 ≥ 95 % and beat F-measure ≥ 0.85 on clean material; key accuracy ≥ 80 % (MIREX-weighted) and chord majmin frame accuracy ≥ 70 %; instrument and genre precision/recall reported per class with a documented threshold; 10-minute analysis with bounded memory, cancellable, crash-safe; DirectML results match CPU within tolerance and are labelled with the backend that actually ran; all v0.1.0 tests pass.
 
-## Phase 7 — Fidelity control
-- Per-operation fidelity controls (guidance, strength, blend); wet/dry, A/B, null-test and spectral-difference views.
-- Artifact reduction; output format control (sample rate, bit depth, dither, LUFS target).
-- **Exit:** every AI operation exposes fidelity controls and an A/B view.
+### v0.3.0 — Source separation [3, 5]
+- Vocals/drums/bass/other (Demucs/HTDemucs- or MDX-class, ONNX on DirectML with CPU fallback), chunked with overlap, chunk size from measured timings within the 6.5 GiB VRAM budget.
+- Stems become linked sources/tracks with provenance; "remove instrument" = mute/delete a stem; residual mix shown honestly.
+- **Acceptance:** separate a 10-minute track on the RX 5700 XT within budget; SDR measured on a licensed reference set; stems re-sum to the mix within a documented error.
 
-## Phase 8 — Multitrack editing
-- Timeline with tracks, clips, fades, crossfades, mute/solo, gain, pan; undo/redo as operations.
-- Effects chain and bus routing; render/bounce to stems or mix.
-- Decide playback location (engine-side vs Web Audio) before starting (ADR backlog).
-- **Exit:** arrange separated, generated and recorded material into a mixed export.
+### v0.4.0 — Multitrack editing and mixing foundation [11, 10, 12, 13]
+- Drag/move/split clips, fades/crossfades, undo/redo as operations, tempo-aware grid snapping from v0.2.0 analysis.
+- Per-track gain, pan, EQ, dynamics; loudness metering (LUFS), true-peak limiting/clipping prevention; masking indicators.
+- Decide and implement the real-time playback location (engine-side vs Web Audio) — ADR required.
+- [13] Boundary problem detection from the v0.2.0 boundary data, plus one-click fixes: fade-in/out (selectable curves), crossfades at joins, click/DC-step and transient smoothing, with before/after preview.
+- **Acceptance:** arrange ≥ 8 tracks with sample-accurate edits, undo/redo across save/reopen, offline render matches real-time playback. [13] On generated test signals with known defects, abrupt starts/stops, boundary clicks and truncated notes are detected with reported precision/recall; after automatic repair, no sample-to-sample step above a documented threshold, no clipping, and no level jump above a documented dB limit at the boundary.
+
+### v0.5.0 — Instrument generation and replacement [4, 5, 10, 13]
+- Generate parts conditioned on tempo, beat grid, key, chords, sections and a user-chosen style; MIDI-first path rendered with local instruments/soundfonts; audio-model path only after probes pass on DirectML.
+- Replace an instrument: separate (v0.3.0) → generate a substitute in time and key → mix.
+- [13] Evaluate local audio continuation/inpainting models (license, size, RAM/VRAM, DirectML/CPU compatibility, real inference on the reference machine) before any is adopted. Then implement generated intros and endings conditioned on the sample, with duration, style, instrumentation and transition controls, several alternatives, and inserted as separate clips. A MIDI-first path (the generation pipeline above, conditioned on the sample's grid, key and chords) is acceptable until an audio model passes evaluation.
+- **Acceptance:** generated parts are on-beat (onset deviation measured against the grid) and in key/chord (pitch-class agreement measured); user can regenerate, edit and A/B. [13] Generated intros/outros: the beat grid continues across the join without drift (measured), detected key/chords stay compatible with the sample, outros end on a resolved chord with a natural decay, and the join has no click, clipping or level jump; tested on R&B, piano and violin material and at least one other genre.
+
+### v0.6.0 — Genre transformation [6, 10]
+- Re-arrange into a target genre: keep selected stems, regenerate others; preserve timing and harmony unless the user changes tempo/key/groove explicitly.
+- **Acceptance:** transformed output keeps the beat grid and chord sequence within measured tolerances; target-genre tag confidence rises on the v0.2.0 tagger.
+
+### v0.7.0 — Lyrics and singing [7, 8, 9]
+- Local transcription where a model proves compatible (Whisper-class, e.g. whisper.cpp with a Vulkan/CPU runner), word/syllable/phoneme alignment, editable lyrics.
+- Lyric rewriting under constraints (kept words, rhyme scheme, syllable counts, meaning), local language model only after evaluation and approval.
+- Singing synthesis / voice conversion with pitch, note duration, breathing/phrasing and voice controls; target-voice rights/consent confirmation required.
+- **Acceptance:** generated vocal phrases land on the intended notes and syllable timings (measured pitch and onset error); rewritten lyrics satisfy the stated constraints (checked automatically); consent flow enforced.
+
+### v0.8.0 — Fidelity, comparison and export [12, 10, 13]
+- Per-operation fidelity controls (strength, blend, wet/dry), A/B and null-test views, spectral difference, version comparison.
+- Export: stems and mix, sample rate, bit depth, dither, LUFS targets, metadata.
+- **Acceptance:** every AI operation exposes fidelity controls and A/B; exports verified by ffprobe and loudness measurement. [13] End-to-end tests: export a sample with a repaired or generated intro/outro and verify timing, harmonic continuity, transition quality and export integrity.
+
+### v0.9.0 — Beta hardening
+- Packaging decision (ADR), installer, first-run model manager with license display and approval, performance and memory profiling on the reference machine, crash reporting kept local, documentation.
+- **Acceptance:** fresh-machine install and an end-to-end scripted workflow covering requirements 1–13.
+
+### v1.0.0 — Release
+- All milestone acceptance tests green on the reference machine; known limitations documented; no network use without per-action approval.
 
 ## Cross-cutting (every phase)
 - Every model: CPU path + probe-gated GPU path; strict DirectML tests with profiling.

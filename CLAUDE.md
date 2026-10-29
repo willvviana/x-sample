@@ -2,7 +2,7 @@
 
 Local-first AI music sample editor: capture or import audio, analyze it, separate stems, replace vocals/lyrics, transform genre, generate instruments, control fidelity, and edit in a multitrack timeline. Everything runs on the user's machine by default.
 
-Status: **Phase 0 (foundation) and Phase 1 (projects, import, recording, waveform editing, export) implemented**. No AI audio models yet. See `docs/ROADMAP.md` for phases and `docs/DECISIONS.md` for ADRs (0001–0010 accepted).
+Status: **v0.1.0 released (Phase 0 + Phase 1). v0.2.0 (musical analysis) in progress**: DSP analyzers, analysis job/cache/corrections/API/UI built; real-audio accuracy below the acceptance targets (`docs/EVALUATION.md`). No AI audio models yet. See `docs/ROADMAP.md` for milestones and `docs/DECISIONS.md` for ADRs (0001–0011 accepted).
 
 ## Target hardware (reference machine)
 
@@ -26,6 +26,9 @@ engine/                     Python 3.12 package `xsample` (uv-managed, uv.lock c
                             cancel_event.py (named-event cancellation)
     audio/                  ffmpeg.py (probe/decode), media.py (import), peaks.py, render.py (preview/export),
                             capture.py (PyAudioWPatch mic + WASAPI loopback), meter.py
+    analysis/               dsp.py (streaming features), rhythm.py, harmony.py, structure.py,
+                            schema.py (versioned sidecar), run.py (worker orchestration),
+                            effective.py (detected + corrections) — ADR-0011
     project/                layout.py, model.py (manifest schema), store.py (atomic save/recovery/lock),
                             ops.py (edit operations), service.py (open project + job results), view.py, verify.py
     runtime/                adapters.py (CPU / DirectML / Vulkan adapters), probe.py + probe_cache.py,
@@ -36,7 +39,8 @@ engine/                     Python 3.12 package `xsample` (uv-managed, uv.lock c
 ui/                         React 19 + TypeScript 5.9 + Vite 7
   src/api/                  client.ts, auth.ts, schema.d.ts (GENERATED — `npm run gen:api`)
   src/components/           Dashboard (Project/System tabs), SystemPanel, BackendsPanel, JobsPanel, ConnectScreen
-  src/workspace/            Workspace, Timeline (canvas waveforms), Recorder, SamplesPanel, playback (Web Audio)
+  src/workspace/            Workspace, Timeline (canvas waveforms + beat grid), AnalysisPanel, Recorder,
+                            SamplesPanel, playback (Web Audio)
   tests/e2e/                Playwright (network-isolated fixtures)
 scripts/                    start.ps1 (built UI served by engine), dev.ps1 (engine + Vite)
 docs/                       ROADMAP.md, DECISIONS.md
@@ -50,7 +54,9 @@ Rules:
 - Long operations must report progress and check `ctx.cancelled()` between bounded chunks.
 - The UI holds no audio processing logic; the engine is the source of truth.
 - Non-destructive editing (ADR-0006, ADR-0009): source audio is never modified; positions are integer samples; the manifest is only changed through `ProjectService.edit`.
-- Audio job kinds (`import_audio`, `export_audio`, `record_audio`, `list_audio_devices`, `verify_project`) are `public=False`; only the project routes submit them. Finished jobs are applied to the project in `EngineState._on_job_finished`.
+- Audio job kinds (`import_audio`, `export_audio`, `record_audio`, `list_audio_devices`, `verify_project`, `analyze_audio`) are `public=False`; only the project routes submit them. Finished jobs are applied to the project in `EngineState._on_job_finished`.
+- Analysis results are sidecars in `analysis/results/<source>/<cache_key>.json` (key = media PCM hash + analyzer version + params); bump `ANALYZER_VERSION` when results can change. User corrections live in the manifest (`analysis`), never in the cache. Never report unavailable recognition as a result; scores are not calibrated probabilities.
+- Evaluation datasets live in `%LOCALAPPDATA%\X-Sample\eval-datasets` (manifests with SHA-256, licenses), never in Git. Fetch only small subsets, with approval. `engine/tools/bench_synthetic.py` and `engine/tools/eval_real_audio.py` report synthetic and real-audio accuracy separately.
 - Recording only starts from an explicit user action; device listing opens no stream. WASAPI render/loopback entries must be the WASAPI host-API ones (the same name also exists under MME). Recordings never leave the machine (ADR-0010).
 
 ## AMD RX 5700 XT compatibility requirements

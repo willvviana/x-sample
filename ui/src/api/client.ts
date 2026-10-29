@@ -14,6 +14,11 @@ export type AudioDevices = components["schemas"]["AudioDevices"];
 export type AudioDevice = components["schemas"]["AudioDevice"];
 export type Peaks = components["schemas"]["PeaksOut"];
 export type ChannelMode = "keep" | "mono" | "stereo";
+export type AnalysisView = components["schemas"]["AnalysisView"];
+export type AnalysisResult = components["schemas"]["AnalysisResult"];
+export type AnalysisCorrections = components["schemas"]["AnalysisCorrections"];
+export type EffectiveAnalysis = components["schemas"]["EffectiveAnalysis"];
+export type ChordOut = components["schemas"]["ChordOut"];
 
 // Same origin when the engine serves the built UI; the engine port during `vite` dev.
 const ENGINE_URL: string =
@@ -81,6 +86,10 @@ export class EngineClient {
     return this.request(path, { method: "DELETE" });
   }
 
+  private put<T>(path: string, body: unknown): Promise<T> {
+    return this.request(path, { method: "PUT", body: JSON.stringify(body) });
+  }
+
   // --- projects ---
   listProjects(): Promise<ProjectList> {
     return this.request("/api/projects");
@@ -105,6 +114,23 @@ export class EngineClient {
   }
   rebuildSource(id: string): Promise<Job> {
     return this.post(`/api/project/sources/${encodeURIComponent(id)}/rebuild`);
+  }
+
+  // --- analysis ---
+  analysis(sourceId: string): Promise<AnalysisView> {
+    return this.request(`/api/project/sources/${encodeURIComponent(sourceId)}/analysis`);
+  }
+  runAnalysis(sourceId: string, force = false): Promise<AnalysisView> {
+    return this.post(`/api/project/sources/${encodeURIComponent(sourceId)}/analysis`, { force });
+  }
+  putCorrections(sourceId: string, body: AnalysisCorrections): Promise<AnalysisView> {
+    return this.put(
+      `/api/project/sources/${encodeURIComponent(sourceId)}/analysis/corrections`,
+      body,
+    );
+  }
+  resetCorrections(sourceId: string): Promise<AnalysisView> {
+    return this.del(`/api/project/sources/${encodeURIComponent(sourceId)}/analysis/corrections`);
   }
 
   // --- editing ---

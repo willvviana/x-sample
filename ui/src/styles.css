@@ -727,3 +727,121 @@ select {
 .notice {
   overflow-wrap: anywhere;
 }
+
+/* --- v0.2.0 analysis -------------------------------------------------------------- */
+.grid-lines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.beat-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--muted);
+  opacity: 0.35;
+}
+.beat-line.down {
+  background: var(--accent);
+  opacity: 0.8;
+}
+.analysis-facts {
+  grid-template-columns: max-content 1fr;
+}
+.analysis-facts .row {
+  margin-top: 4px;
+}
+.row.wrap {
+  flex-wrap: wrap;
+}
+.analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.analysis-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px 12px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.analysis-box legend {
+  font-weight: 600;
+  padding: 0 4px;
+}
+.analysis-box table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.analysis-box th,
+.analysis-box td {
+  text-align: left;
+  padding: 2px 6px 2px 0;
+}
+.analysis-lanes .spacer {
+  flex: 1;
+}
+.analysis-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--lane);
+}
+.analysis-scroll canvas {
+  display: block;
+  cursor: pointer;
+}
+.unavailable {
+  margin: 0;
+  padding-left: 18px;
+}
+.tag-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 4px 2px 10px;
+}
+.chord-list ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  list-style: none;
+  padding: 0;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.chord-editor {
+  align-items: center;
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+}
+.analysis-panel-body .small-btn,
+.analysis-facts .small-btn,
+.analysis-box .small-btn,
+.chord-list .small-btn,
+.tag .small-btn {
+  margin-left: 0;
+}
+.analysis-box {
+  align-content: start;
+}
+.analysis-box label {
+  display: inline-grid;
+}

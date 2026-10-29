@@ -74,3 +74,7 @@ exports/
 *.opus
 *.aac
 *.oga
+
+# --- Evaluation datasets (kept in %LOCALAPPDATA%\X-Sample\eval-datasets, never in Git) ---
+eval-datasets/
+*.jams

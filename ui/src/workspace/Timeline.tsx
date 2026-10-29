@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import type { Clip, EngineClient, Peaks, ProjectView } from "../api/client";
+import type { BeatGrid } from "./AnalysisPanel";
 import { clamp, formatPosition } from "./time";
 
 export interface Selection {
@@ -19,6 +20,7 @@ interface Props {
   onSelect: (selection: Selection | undefined) => void;
   onPickClip: (clipId: string | undefined) => void;
   onTogglePlay: () => void;
+  grid?: BeatGrid | undefined;
 }
 
 const LANE_HEIGHT = 84;
@@ -34,6 +36,7 @@ export function Timeline({
   onSelect,
   onPickClip,
   onTogglePlay,
+  grid,
 }: Props) {
   const rate = project.sample_rate;
   const frame = useRef<HTMLDivElement>(null);
@@ -196,6 +199,7 @@ export function Timeline({
                 onPlayhead={onPlayhead}
                 onSelect={onSelect}
                 onPickClip={onPickClip}
+                grid={grid}
               />
             </div>
           );
@@ -248,6 +252,7 @@ interface LaneProps {
   onPlayhead: (sample: number) => void;
   onSelect: (selection: Selection | undefined) => void;
   onPickClip: (clipId: string | undefined) => void;
+  grid: BeatGrid | undefined;
 }
 
 function Lane({
@@ -265,6 +270,7 @@ function Lane({
   onPlayhead,
   onSelect,
   onPickClip,
+  grid,
 }: LaneProps) {
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef<{ anchor: number; moved: boolean }>(undefined);
@@ -331,6 +337,7 @@ function Lane({
           selected={clip.id === selectedClipId}
         />
       ))}
+      {grid && <GridLines clips={clips} grid={grid} start={start} scale={scale} width={width} />}
       {selection && (
         <div
           className="selection"
@@ -341,6 +348,42 @@ function Lane({
           data-testid="selection"
         />
       )}
+    </div>
+  );
+}
+
+/** Effective beat grid of the analysed source, mapped through each clip onto the timeline. */
+function GridLines(props: {
+  clips: Clip[];
+  grid: BeatGrid;
+  start: number;
+  scale: number;
+  width: number;
+}) {
+  const { clips, grid, start, scale, width } = props;
+  const lines: { x: number; down: boolean }[] = [];
+  const downs = new Set(grid.downbeats);
+  const spacing = grid.beats.length > 1 ? ((grid.beats[1] ?? 0) - (grid.beats[0] ?? 0)) / scale : 0;
+  for (const clip of clips) {
+    if (clip.source_id !== grid.sourceId) continue;
+    for (const b of grid.beats) {
+      if (b < clip.source_in || b >= clip.source_in + clip.duration) continue;
+      const down = downs.has(b);
+      if (!down && spacing < 5) continue;
+      const x = (clip.timeline_start + (b - clip.source_in) - start) / scale;
+      if (x >= 0 && x < width) lines.push({ x, down });
+      if (lines.length > 4000) break;
+    }
+  }
+  return (
+    <div className="grid-lines" aria-hidden="true" data-testid="beat-grid">
+      {lines.map((l) => (
+        <span
+          key={l.x}
+          className={l.down ? "beat-line down" : "beat-line"}
+          style={{ left: Math.round(l.x) }}
+        />
+      ))}
     </div>
   );
 }

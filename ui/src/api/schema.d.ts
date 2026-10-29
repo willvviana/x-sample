@@ -588,10 +588,140 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/project/sources/{source_id}/analysis": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Analysis */
+    get: operations["get_analysis_api_project_sources__source_id__analysis_get"];
+    put?: never;
+    /** Run Analysis */
+    post: operations["run_analysis_api_project_sources__source_id__analysis_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/project/sources/{source_id}/analysis/corrections": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** Put Corrections */
+    put: operations["put_corrections_api_project_sources__source_id__analysis_corrections_put"];
+    post?: never;
+    /** Reset Corrections */
+    delete: operations["reset_corrections_api_project_sources__source_id__analysis_corrections_delete"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /**
+     * AnalysisCorrections
+     * @description User corrections for one source. Kept in the manifest, never in the analysis cache, so
+     *     re-running the analysis does not lose them.
+     */
+    AnalysisCorrections: {
+      beat_grid?: components["schemas"]["BeatGridCorrection"];
+      key?: components["schemas"]["KeyCorrection"] | null;
+      /** Chords */
+      chords?: components["schemas"]["ChordCorrection"][];
+      /** Tags */
+      tags?: components["schemas"]["TagCorrection"][];
+      /** Updated At */
+      updated_at?: string | null;
+    };
+    /** AnalysisResult */
+    AnalysisResult: {
+      /**
+       * Schema Version
+       * @default 1
+       */
+      schema_version: number;
+      /**
+       * Analyzer Id
+       * @default xsample.analysis.dsp
+       */
+      analyzer_id: string;
+      /**
+       * Analyzer Version
+       * @default dsp-0.2.0
+       */
+      analyzer_version: string;
+      /**
+       * Backend
+       * @description where the analysis actually ran (DSP analyzers are CPU-only)
+       * @default cpu
+       * @constant
+       */
+      backend: "cpu";
+      /** Source Id */
+      source_id: string;
+      /** Cache Key */
+      cache_key: string;
+      /** Media Sha256 */
+      media_sha256: string;
+      /** Sample Rate */
+      sample_rate: number;
+      /** Analysis Rate */
+      analysis_rate: number;
+      /** Frames */
+      frames: number;
+      /** Params */
+      params: {
+        [key: string]: number | string;
+      };
+      /** Created At */
+      created_at: string;
+      timings: components["schemas"]["Timings"];
+      rhythm: components["schemas"]["RhythmOut"];
+      harmony: components["schemas"]["HarmonyOut"];
+      structure: components["schemas"]["StructureOut"];
+      boundaries: components["schemas"]["BoundariesOut"];
+      genres: components["schemas"]["Unavailable"];
+      instruments: components["schemas"]["Unavailable"];
+      vocals: components["schemas"]["Unavailable"];
+    };
+    /** AnalysisView */
+    AnalysisView: {
+      /** Source Id */
+      source_id: string;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "none" | "queued" | "running" | "ready" | "failed" | "cancelled" | "stale";
+      /** Analyzer Version */
+      analyzer_version: string;
+      /** Cache Key */
+      cache_key: string | null;
+      job: components["schemas"]["JobOut"] | null;
+      /** Error */
+      error: string | null;
+      result: components["schemas"]["AnalysisResult"] | null;
+      corrections: components["schemas"]["AnalysisCorrections"];
+      effective: components["schemas"]["EffectiveAnalysis"] | null;
+    };
+    /** AnalyzeRequest */
+    AnalyzeRequest: {
+      /**
+       * Force
+       * @default false
+       */
+      force: boolean;
+    };
     /** Anchor */
     Anchor: {
       /** Source */
@@ -655,6 +785,105 @@ export interface components {
        */
       claims_model_support: boolean;
     };
+    /** BassNoteOut */
+    BassNoteOut: {
+      /** Start */
+      start: number;
+      /** End */
+      end: number;
+      /** Pitch Class */
+      pitch_class: number;
+    };
+    /**
+     * BeatGridCorrection
+     * @description Corrections to the detected beat grid, applied in this order: bpm or scale, offset,
+     *     meter, downbeat shift.
+     */
+    BeatGridCorrection: {
+      /**
+       * Bpm
+       * @description replace the grid with a constant tempo
+       */
+      bpm?: number | null;
+      /**
+       * Scale
+       * @default normal
+       * @enum {string}
+       */
+      scale: "half" | "normal" | "double";
+      /**
+       * Half Phase
+       * @description which beats 'half' keeps
+       * @default 0
+       */
+      half_phase: number;
+      /**
+       * Offset
+       * @description shift in samples
+       * @default 0
+       */
+      offset: number;
+      /** Meter */
+      meter?: number | null;
+      /**
+       * Downbeat Shift
+       * @description beats to move beat 1 by
+       * @default 0
+       */
+      downbeat_shift: number;
+    };
+    /** BoundariesOut */
+    BoundariesOut: {
+      start: components["schemas"]["BoundaryEdge"];
+      end: components["schemas"]["BoundaryEdge"];
+    };
+    /**
+     * BoundaryEdge
+     * @description Measurements at one end of the source, for intro/outro repair (requirement 13).
+     *
+     *     These are raw measurements, not verdicts: problem detection is a v0.4.0 feature.
+     */
+    BoundaryEdge: {
+      /** Position */
+      position: number;
+      /**
+       * Edge Amplitude
+       * @description |sample| at the boundary (a large value is a step)
+       */
+      edge_amplitude: number;
+      /**
+       * Level Dbfs
+       * @description RMS of the 10 ms at the boundary
+       */
+      level_dbfs: number;
+      /**
+       * Level Vs Median Db
+       * @description boundary level relative to the median level
+       */
+      level_vs_median_db: number;
+      /**
+       * Beat Offset
+       * @description signed distance to the nearest beat, in beats (0 = on the beat)
+       */
+      beat_offset: number | null;
+      /**
+       * Beats From Downbeat
+       * @description start: beats until the first downbeat; end: beats since the last downbeat
+       */
+      beats_from_downbeat: number | null;
+      /** Section Label */
+      section_label: string | null;
+      /**
+       * Chord
+       * @description chord at the boundary
+       */
+      chord: string | null;
+      /**
+       * Chord Is Tonic
+       * @description that chord is the tonic triad of the key
+       */
+      chord_is_tonic: boolean | null;
+    };
     /** Budgets */
     Budgets: {
       /** Vram Budget Bytes */
@@ -663,6 +892,42 @@ export interface components {
       worker_memory_limit_bytes: number;
       /** Max Concurrent Jobs */
       max_concurrent_jobs: number;
+    };
+    /**
+     * ChordCorrection
+     * @description Replaces whatever was detected between start and end (source samples).
+     */
+    ChordCorrection: {
+      /** Start */
+      start: number;
+      /** End */
+      end: number;
+      /**
+       * Root
+       * @description None = no chord
+       */
+      root?: number | null;
+      /** Quality */
+      quality?: ("maj" | "min" | "7" | "maj7" | "min7") | null;
+      /** Bass */
+      bass?: number | null;
+    };
+    /** ChordOut */
+    ChordOut: {
+      /** Start */
+      start: number;
+      /** End */
+      end: number;
+      /** Root */
+      root: number | null;
+      /** Quality */
+      quality: ("maj" | "min" | "7" | "maj7" | "min7") | null;
+      /** Bass */
+      bass: number | null;
+      /** Label */
+      label: string;
+      /** Confidence */
+      confidence: number;
     };
     /** Clip */
     Clip: {
@@ -680,6 +945,13 @@ export interface components {
       duration: number;
       /** Time Map */
       time_map: components["schemas"]["Anchor"][];
+    };
+    /** ContourPoint */
+    ContourPoint: {
+      /** Position */
+      position: number;
+      /** Midi */
+      midi: number | null;
     };
     /** CpuInfo */
     CpuInfo: {
@@ -705,6 +977,41 @@ export interface components {
       error?: string | null;
       /** Runtime Version */
       runtime_version?: string | null;
+    };
+    /** EffectiveAnalysis */
+    EffectiveAnalysis: {
+      /** Bpm */
+      bpm: number;
+      /** Meter */
+      meter: number | null;
+      /** Beats */
+      beats: number[];
+      /** Downbeats */
+      downbeats: number[];
+      key: components["schemas"]["KeyOut"] | null;
+      /** Chords */
+      chords: components["schemas"]["ChordOut"][];
+      /** Tags */
+      tags: components["schemas"]["EffectiveTag"][];
+      /** Corrected */
+      corrected: ("beat_grid" | "key" | "chords" | "tags")[];
+    };
+    /** EffectiveTag */
+    EffectiveTag: {
+      /**
+       * Kind
+       * @enum {string}
+       */
+      kind: "genre" | "instrument";
+      /** Label */
+      label: string;
+      /**
+       * Origin
+       * @enum {string}
+       */
+      origin: "user" | "detected";
+      /** Confidence */
+      confidence: number | null;
     };
     /** ExportRecord */
     ExportRecord: {
@@ -775,6 +1082,31 @@ export interface components {
       /** Detail */
       detail?: components["schemas"]["ValidationError"][];
     };
+    /** HarmonyOut */
+    HarmonyOut: {
+      /** Key Candidates */
+      key_candidates: components["schemas"]["KeyOut"][];
+      /** Key Confidence */
+      key_confidence: number;
+      /** Local Keys */
+      local_keys: components["schemas"]["KeyRegion"][];
+      /** Chords */
+      chords: components["schemas"]["ChordOut"][];
+      /** Harmonic Rhythm Beats */
+      harmonic_rhythm_beats: number | null;
+      /** Changes Per Bar */
+      changes_per_bar: number | null;
+      /** Bass Notes */
+      bass_notes: components["schemas"]["BassNoteOut"][];
+      /** Melody Notes */
+      melody_notes: components["schemas"]["MelodyNoteOut"][];
+      /** Melody Contour */
+      melody_contour: components["schemas"]["ContourPoint"][];
+      /** Voiced Ratio */
+      voiced_ratio: number;
+      /** Notes */
+      notes: string[];
+    };
     /** Health */
     Health: {
       /**
@@ -842,6 +1174,45 @@ export interface components {
         [key: string]: unknown;
       };
     };
+    /** KeyCorrection */
+    KeyCorrection: {
+      /** Tonic */
+      tonic: number;
+      /**
+       * Mode
+       * @enum {string}
+       */
+      mode: "major" | "minor";
+    };
+    /** KeyOut */
+    KeyOut: {
+      /** Tonic */
+      tonic: number;
+      /**
+       * Mode
+       * @enum {string}
+       */
+      mode: "major" | "minor";
+      /** Label */
+      label: string;
+      /** Score */
+      score: number;
+    };
+    /** KeyRegion */
+    KeyRegion: {
+      /** Start */
+      start: number;
+      /** End */
+      end: number;
+      key: components["schemas"]["KeyOut"];
+    };
+    /** LevelPoint */
+    LevelPoint: {
+      /** Position */
+      position: number;
+      /** Db */
+      db: number;
+    };
     /**
      * Media
      * @description Re-creatable decoded working copy of a source at the project rate.
@@ -865,6 +1236,24 @@ export interface components {
       rms: number;
       /** Processing */
       processing?: components["schemas"]["ProcessingRecord"][];
+    };
+    /** MelodyNoteOut */
+    MelodyNoteOut: {
+      /** Start */
+      start: number;
+      /** End */
+      end: number;
+      /** Midi */
+      midi: number;
+      /**
+       * Articulation
+       * @enum {string}
+       */
+      articulation: "attack" | "legato" | "glide";
+      /** Vibrato Hz */
+      vibrato_hz: number | null;
+      /** Vibrato Cents */
+      vibrato_cents: number | null;
     };
     /** MemoryInfo */
     MemoryInfo: {
@@ -1111,6 +1500,52 @@ export interface components {
        */
       max_seconds: number;
     };
+    /** RhythmOut */
+    RhythmOut: {
+      /**
+       * Bpm
+       * @description 0 when no periodic rhythm was found
+       */
+      bpm: number;
+      /** Confidence */
+      confidence: number;
+      /** Candidates */
+      candidates: components["schemas"]["TempoCandidateOut"][];
+      /** Tempo Curve */
+      tempo_curve: components["schemas"]["TempoPoint"][];
+      /** Variable Tempo */
+      variable_tempo: boolean;
+      /** Tempo Changes */
+      tempo_changes: components["schemas"]["TempoPoint"][];
+      /** Beats */
+      beats: number[];
+      /** Beat Strength */
+      beat_strength: number[];
+      /** Downbeats */
+      downbeats: number[];
+      /** Meter */
+      meter: number | null;
+      /** Meter Confidence */
+      meter_confidence: number;
+      /** Subdivision */
+      subdivision: ("duple" | "triplet") | null;
+      /** Subdivision Confidence */
+      subdivision_confidence: number;
+      /** Swing Ratio */
+      swing_ratio: number | null;
+      /** Swing Confidence */
+      swing_confidence: number;
+      /** Syncopation */
+      syncopation: number | null;
+      /** Microtiming Ms */
+      microtiming_ms: number | null;
+      /** Onsets */
+      onsets: number[];
+      /** Onset Strength */
+      onset_strength: number[];
+      /** Notes */
+      notes: string[];
+    };
     /**
      * Sample
      * @description A named slice of a source (non-destructive); exported or placed on a track on demand.
@@ -1133,6 +1568,19 @@ export interface components {
     SamplePatch: {
       /** Name */
       name: string;
+    };
+    /** SectionOut */
+    SectionOut: {
+      /** Start */
+      start: number;
+      /** End */
+      end: number;
+      /** Label */
+      label: string;
+      /** Confidence */
+      confidence: number;
+      /** Loudness Db */
+      loudness_db: number;
     };
     /** SliceRequest */
     SliceRequest: {
@@ -1186,6 +1634,15 @@ export interface components {
        */
       status: "ok" | "needs_rebuild" | "missing_original";
     };
+    /** StructureOut */
+    StructureOut: {
+      /** Sections */
+      sections: components["schemas"]["SectionOut"][];
+      /** Loudness Curve */
+      loudness_curve: components["schemas"]["LevelPoint"][];
+      /** Dynamic Range Db */
+      dynamic_range_db: number | null;
+    };
     /** SystemInfo */
     SystemInfo: {
       /** Engine Version */
@@ -1204,6 +1661,48 @@ export interface components {
       budgets: components["schemas"]["Budgets"];
       /** Test Tasks Enabled */
       test_tasks_enabled: boolean;
+    };
+    /** TagCorrection */
+    TagCorrection: {
+      /**
+       * Kind
+       * @enum {string}
+       */
+      kind: "genre" | "instrument";
+      /** Label */
+      label: string;
+    };
+    /** TempoCandidateOut */
+    TempoCandidateOut: {
+      /** Bpm */
+      bpm: number;
+      /**
+       * Relation
+       * @enum {string}
+       */
+      relation: "primary" | "half" | "double" | "other";
+      /** Score */
+      score: number;
+    };
+    /** TempoPoint */
+    TempoPoint: {
+      /** Position */
+      position: number;
+      /** Bpm */
+      bpm: number;
+    };
+    /** Timings */
+    Timings: {
+      /** Decode Features S */
+      decode_features_s: number;
+      /** Rhythm S */
+      rhythm_s: number;
+      /** Harmony S */
+      harmony_s: number;
+      /** Structure S */
+      structure_s: number;
+      /** Total S */
+      total_s: number;
     };
     /** Track */
     Track: {
@@ -1249,6 +1748,20 @@ export interface components {
       start: number;
       /** End */
       end: number;
+    };
+    /**
+     * Unavailable
+     * @description A result this build cannot produce honestly (e.g. it needs a model not yet approved).
+     */
+    Unavailable: {
+      /**
+       * Status
+       * @default unavailable
+       * @constant
+       */
+      status: "unavailable";
+      /** Reason */
+      reason: string;
     };
     /** ValidationError */
     ValidationError: {
@@ -2394,6 +2907,138 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["JobOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  get_analysis_api_project_sources__source_id__analysis_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        source_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AnalysisView"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  run_analysis_api_project_sources__source_id__analysis_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        source_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AnalyzeRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AnalysisView"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  put_corrections_api_project_sources__source_id__analysis_corrections_put: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        source_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AnalysisCorrections"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AnalysisView"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  reset_corrections_api_project_sources__source_id__analysis_corrections_delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        source_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AnalysisView"];
         };
       };
       /** @description Validation Error */

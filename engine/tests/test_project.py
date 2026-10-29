@@ -17,7 +17,14 @@ from xsample.audio import media
 from xsample.audio.render import render_blocks
 from xsample.config import EngineSettings
 from xsample.project import layout, ops, store
-from xsample.project.model import Anchor, Clip, Project, source_to_timeline, timeline_to_source
+from xsample.project.model import (
+    FORMAT_VERSION,
+    Anchor,
+    Clip,
+    Project,
+    source_to_timeline,
+    timeline_to_source,
+)
 from xsample.project.service import NoProjectOpenError, ProjectService
 from xsample.project.store import (
     InvalidProjectError,
@@ -73,7 +80,7 @@ def test_create_makes_the_documented_layout(
     for d in layout.DIRECTORIES:
         assert (root / d).is_dir(), d
     manifest = json.loads((root / "project.json").read_text(encoding="utf-8"))
-    assert manifest["format_version"] == 1 and manifest["sample_rate"] == RATE
+    assert manifest["format_version"] == FORMAT_VERSION and manifest["sample_rate"] == RATE
     assert manifest["tracks"] == [] and manifest["clips"] == []
     assert (root / layout.LOCK).exists()
 

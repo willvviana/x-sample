@@ -88,6 +88,15 @@ class VerifyParams(_Params):
     sources: list[dict[str, Any]]
 
 
+class AnalyzeParams(_Params):
+    project_dir: str
+    source_id: str = Field(pattern=r"^src_[0-9a-f]{12}$")
+    media_path: str = Field(min_length=1, max_length=300)
+    media_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sample_rate: int = Field(ge=8000, le=192000)
+    frames: int = Field(gt=0)
+
+
 def _zero(_: BaseModel) -> int:
     return 0
 
@@ -153,6 +162,13 @@ KINDS: dict[str, JobKind] = {
         VerifyParams,
         lambda _: False,
         est_ram_bytes=lambda _: 200 * MiB,
+        public=False,
+        timeout_s=lambda _: 4 * 3600.0,
+    ),
+    "analyze_audio": JobKind(
+        AnalyzeParams,
+        lambda _: False,  # DSP analyzers are CPU-only; no GPU is claimed
+        est_ram_bytes=lambda _: 600 * MiB,
         public=False,
         timeout_s=lambda _: 4 * 3600.0,
     ),

@@ -10,13 +10,14 @@ LOCK = ".xsample.lock"
 
 SOURCES = "sources"  # immutable originals, content-addressed
 PEAKS = "analysis/peaks"  # waveform peak pyramids
+ANALYSIS_RESULTS = "analysis/results"  # versioned analysis sidecars (ADR-0011)
 MEDIA = "cache/media"  # decoded working copies at the project sample rate
 TMP = "cache/tmp"
 INCOMING = "cache/incoming"  # uploads awaiting import
 RECORDING = "cache/recording"
 EXPORTS = "exports"
 
-DIRECTORIES = (SOURCES, PEAKS, MEDIA, TMP, INCOMING, RECORDING, EXPORTS)
+DIRECTORIES = (SOURCES, PEAKS, ANALYSIS_RESULTS, MEDIA, TMP, INCOMING, RECORDING, EXPORTS)
 SOURCE_EXTENSIONS = frozenset(
     {".wav", ".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".aif", ".aiff"}
 )
